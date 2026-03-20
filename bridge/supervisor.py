@@ -100,6 +100,8 @@ def build_kiro_validation_prompt(packet: CodexWorkerPacket) -> str:
         [
             "Validate this Codex CLI worker packet.",
             "Classify it as ON_TOPIC, DRIFTING, or ROGUE.",
+            "Assign a confidence_score from 0 to 100.",
+            "Choose a recommended_action from accept, accept_with_cleanup, retry_narrower, replace_worker, or stop_for_human.",
             "Salvage only visible artifacts and explicit evidence.",
             "If needed, provide a compact RESTART_PACKET for a narrower replacement worker.",
             "",
@@ -107,6 +109,8 @@ def build_kiro_validation_prompt(packet: CodexWorkerPacket) -> str:
             "",
             "Return a VALIDATION_REPORT with:",
             "verdict:",
+            "confidence_score:",
+            "recommended_action:",
             "why:",
             "keep:",
             "drop:",

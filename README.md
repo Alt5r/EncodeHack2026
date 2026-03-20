@@ -86,7 +86,7 @@ The bridge does three things:
 
 - runs a Codex worker through the local `codex` CLI
 - extracts visible text, tool activity, reasoning signals, and errors from the JSONL stream
-- optionally sends the resulting `CODEX_WORKER_PACKET` to Kiro for validation
+- optionally sends the resulting `CODEX_WORKER_PACKET` to Kiro for validation, confidence scoring, and action selection
 
 ### Files
 
@@ -148,7 +148,7 @@ What happens:
 1. The script runs `codex exec --json`.
 2. It converts the stream into a `CODEX_WORKER_PACKET`.
 3. It starts `kiro-cli acp`.
-4. It sends the packet to Kiro as a validation prompt.
+4. It sends the packet to Kiro as a validation prompt that requests `verdict`, `confidence_score`, and `recommended_action`.
 5. It writes Kiro's response to `kiro-response.md`.
 
 ### Kiro Calls Codex Directly
@@ -182,6 +182,19 @@ The bridge treats these as valid extraction surfaces:
 - errors and transport failures
 
 It does **not** assume access to private chain-of-thought.
+
+### Validation Skill
+
+The report scoring logic now also exists as a reusable skill file:
+
+- `.agents/skills/kiro-validation-report/SKILL.md`
+
+That skill defines:
+
+- the `VALIDATION_REPORT` schema
+- how to assign `confidence_score`
+- how to choose `recommended_action`
+- when to emit a `RESTART_PACKET`
 
 ### Running Tests
 

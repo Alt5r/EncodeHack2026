@@ -49,3 +49,29 @@ Drop:
 - Meta commentary about reasoning quality
 - Large off-topic sections
 - Any content that would bias the replacement worker away from the true objective
+
+## Confidence scoring
+
+Use an integer from `0` to `100`.
+
+- `90-100`: verdict is obvious and strongly supported
+- `70-89`: verdict is strong with minor ambiguity
+- `40-69`: mixed packet, partial salvage, noticeable uncertainty
+- `0-39`: severe drift, major ambiguity, or unusable evidence
+
+## Recommended action
+
+Choose exactly one:
+
+- `accept`
+- `accept_with_cleanup`
+- `retry_narrower`
+- `replace_worker`
+- `stop_for_human`
+
+Default mapping:
+
+- `ON_TOPIC` -> `accept` or `accept_with_cleanup`
+- `DRIFTING` -> `retry_narrower`
+- `ROGUE` -> `replace_worker`
+- environment or evidence failure -> `stop_for_human`
