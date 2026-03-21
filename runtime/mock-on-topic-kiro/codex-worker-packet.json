@@ -1,0 +1,47 @@
+{
+  "source": "mock:mock_codex_on_topic.jsonl",
+  "task": "Inspect this repository and report only relevant findings.",
+  "status": "completed",
+  "thread_id": "thread_mock_on_topic",
+  "turn_count": 1,
+  "event_types": [
+    "thread.started",
+    "turn.started",
+    "agent_message.delta",
+    "tool.started",
+    "tool.completed",
+    "reasoning_item.created",
+    "agent_message.delta",
+    "message.completed",
+    "turn.completed"
+  ],
+  "visible_output": "Inspecting repository files. The repository already contains Kiro steering and agent configuration files relevant to the task. The workspace already contains a multi-agent supervision scaffold and no unrelated app code.",
+  "final_message": "WORKER_CHECKPOINT objective: inspect the repository status: complete valid_artifacts: AGENTS.md, README.md, .kiro/agents/ proposed_next_step: validate the current scaffold and add the bridge demo",
+  "tool_activity": [
+    {
+      "name": "shell",
+      "status": "pending",
+      "call_id": "tool_shell_1",
+      "title": null,
+      "input_preview": "{\"cmd\": \"find . -maxdepth 2 -type f | sort\"}",
+      "output_preview": ""
+    },
+    {
+      "name": "shell",
+      "status": "completed",
+      "call_id": "tool_shell_1",
+      "title": null,
+      "input_preview": "",
+      "output_preview": "./AGENTS.md ./README.md ./.kiro/agents/pipeline-worker.md"
+    }
+  ],
+  "reasoning_signals": [
+    {
+      "event_type": "reasoning_item.created",
+      "preview": "The repository already contains Kiro steering and agent configuration files relevant to the task."
+    }
+  ],
+  "handoffs": [],
+  "errors": [],
+  "non_json_output": []
+}
