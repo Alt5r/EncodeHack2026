@@ -11,14 +11,16 @@ const MAX_ROTATION = 0.6;
 const DRAG_SENSITIVITY = 300;
 // Spring stiffness for snapping back (0-1, higher = snappier)
 const SPRING_LERP = 0.08;
+// If pointer moves less than this (px) between down/up, it's a click not a drag
+const CLICK_THRESHOLD = 6;
 
 // Rest rotation (the "always facing user" default pose)
 const REST_ROTATION = new THREE.Euler(0.0, 0.4, 0);
 
-function WalkieTalkie() {
+function WalkieTalkie({ onToggle }: { onToggle: () => void }) {
   const { scene } = useGLTF('/models/walkie-talkie/scene.gltf');
-  const yGroupRef = useRef<THREE.Group>(null!);  // outer: Y rotation only
-  const xGroupRef = useRef<THREE.Group>(null!);  // inner: X rotation only
+  const yGroupRef = useRef<THREE.Group>(null!);
+  const xGroupRef = useRef<THREE.Group>(null!);
 
   // Make materials matte — kill the shine
   useEffect(() => {
@@ -36,6 +38,7 @@ function WalkieTalkie() {
   // Drag state (not reactive — just tracking values)
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0 });
+  const dragDistance = useRef(0);
   // Target rotation offset from rest (where we're dragging toward)
   const targetOffset = useRef({ x: 0, y: 0 });
 
@@ -44,6 +47,7 @@ function WalkieTalkie() {
 
     const onPointerDown = (e: PointerEvent) => {
       isDragging.current = true;
+      dragDistance.current = 0;
       dragStart.current = { x: e.clientX, y: e.clientY };
       canvas.setPointerCapture(e.pointerId);
     };
@@ -53,6 +57,7 @@ function WalkieTalkie() {
 
       const dx = e.clientX - dragStart.current.x;
       const dy = e.clientY - dragStart.current.y;
+      dragDistance.current = Math.sqrt(dx * dx + dy * dy);
 
       // atan gives natural diminishing returns — drags far but rotation tapers off
       targetOffset.current = {
@@ -62,7 +67,13 @@ function WalkieTalkie() {
     };
 
     const onPointerUp = (e: PointerEvent) => {
+      if (!isDragging.current) return;
       isDragging.current = false;
+
+      // If barely moved, treat as click → toggle transcript
+      if (dragDistance.current < CLICK_THRESHOLD) {
+        onToggle();
+      }
       // Spring back: set target to zero offset
       targetOffset.current = { x: 0, y: 0 };
       canvas.releasePointerCapture(e.pointerId);
@@ -79,7 +90,7 @@ function WalkieTalkie() {
       canvas.removeEventListener('pointerup', onPointerUp);
       canvas.removeEventListener('pointerleave', onPointerUp);
     };
-  }, [gl]);
+  }, [gl, onToggle]);
 
   useFrame(() => {
     if (!yGroupRef.current || !xGroupRef.current) return;
@@ -94,24 +105,30 @@ function WalkieTalkie() {
       <group ref={xGroupRef} rotation={[REST_ROTATION.x, 0, 0]}>
         <primitive
           object={scene}
-          scale={1.35}
-          position={[0, -0.8, 0]}
+          scale={0.6}
+          position={[0, 0, 0]}
         />
       </group>
     </group>
   );
 }
 
-export default function RadioViewer() {
+interface RadioViewerProps {
+  onToggle: () => void;
+  containerStyle?: React.CSSProperties;
+}
+
+export default function RadioViewer({ onToggle, containerStyle }: RadioViewerProps) {
   return (
     <div
-      style={{
+      style={containerStyle ?? {
         position: 'absolute',
-        bottom: 30,
-        right: 40,
-        width: '350px',
-        height: '450px',
+        bottom: -180,
+        right: -40,
+        width: '400px',
+        height: '500px',
         pointerEvents: 'none',
+        zIndex: 15,
       }}
     >
       <Canvas
@@ -120,7 +137,7 @@ export default function RadioViewer() {
         style={{ pointerEvents: 'auto', cursor: 'grab' }}
       >
         <Suspense fallback={null}>
-          <WalkieTalkie />
+          <WalkieTalkie onToggle={onToggle} />
           <ambientLight intensity={2} />
           <directionalLight position={[2, 3, 4]} intensity={0.5} />
         </Suspense>

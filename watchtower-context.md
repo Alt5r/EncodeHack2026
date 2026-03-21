@@ -183,6 +183,75 @@ Reference image: `tumblr_o365zaIQLp1sikueao3_1280.jpg` (Firewatch "Two Forks" ma
 
 ---
 
+## V0 Reference Frontend (b_tnhu7SSKNFJ-*)
+
+A teammate generated an alternative frontend using v0.dev. It lives in `b_tnhu7SSKNFJ-1774090809854/` inside this repo. **Our Canvas 2D map takes precedence** — the v0 map is SVG tile-based and less authentic. But the v0 version has useful screens/features we can cherry-pick from.
+
+### What the v0 frontend has that ours doesn't:
+
+**Screens & Flow:**
+- **Landing page** (`app/page.tsx`) — atmospheric CSS scene: gradient sky (purple→orange), 50 twinkling stars, 3 SVG mountain layers, 40 procedural trees, watchtower silhouette with glowing amber windows, 20 animated fireflies, vignette + film grain. Two nav buttons to `/game` and `/terminal`.
+- **Doctrine terminal** (`components/doctrine-terminal.tsx`) — full-screen retro CRT terminal. Amber monospace text on black, scanlines overlay, text glow (`0 0 8px rgba(255,176,50,0.5)`), blinking cursor (530ms). User types doctrine lines, double-enter deploys. Shows animated deploy sequence (10 lines, 300-700ms stagger), stores doctrine in `sessionStorage`, navigates to `/game`.
+- **Game page** (`app/game/page.tsx`) — two-column layout: `GameMap` (flex-1) + `RadioPanel` (320px fixed sidebar), wrapped in `GameProvider` context.
+
+**Game Simulation (client-side mock):**
+- `components/game/game-context.tsx` — React Context with full simulation:
+  - 60×40 grid, 16px tiles
+  - Terrain: 3-octave Perlin noise, 3 lakes (ellipse), 1 river (sinuous NW→SE), 1 valley, village (8×8 bottom-right), roads (cross pattern)
+  - Fire spread: wind-directional probability (35% primary dir, 15% diagonal, 8-12% orthogonal), fuel/burnout mechanics
+  - Agent movement: helicopters 0.5 tiles/tick, ground crews 0.2 tiles/tick, smooth interpolation
+  - Lose condition: fire reaches village
+  - 800ms tick interval
+  - Hardcoded radio messages at ticks 0, 5, 10, 15, 20, 25, 30
+
+**Game Map (SVG-based — NOT using this, our Canvas 2D map is better):**
+- `components/game/game-map.tsx` — SVG renderer with:
+  - Tile colors by type (5-level elevation greens, teal water, tan firebreak, purple village)
+  - 3 SVG tree symbol variants (triangle, double-triangle, ellipse), 1-6 per tile
+  - Marching squares contour lines
+  - Fire: orange rect with pulsing opacity + Gaussian blur glow
+  - Agents: watchtower (triangle + pulsing beacon + scan range circle), helicopter (blue ellipse + rotating rotor), ground crew (brown circle + tan head)
+  - Dashed route lines to targets
+  - Wind indicator (compass circle + arrow), legend, scale bar
+
+**Radio Panel:**
+- `components/game/radio-panel.tsx` — right sidebar:
+  - Header: "RADIO" + green pulsing indicator + "142.850 MHz" frequency
+  - Waveform visualizer: 20 bars animating on new messages
+  - Scrolling message log, color-coded by role (command=amber, helicopter=sky-blue, ground=orange)
+  - Auto-scrolls to latest
+  - Footer: "WATCHTOWER COMMAND v1.0" / "ENCRYPTED"
+
+**Ambient Audio:**
+- `components/ambient-audio.tsx` — Web Audio API:
+  - Brown noise (1s buffer, Gaussian random walk → lowpass 400Hz)
+  - Radio static (sawtooth 60Hz → bandpass 2kHz, LFO modulated)
+  - Master gain 0.15, toggle button bottom-right (lucide Volume2/VolumeX icons)
+
+**Landing Scene:**
+- `components/watchtower-scene.tsx` — pure CSS/SVG atmospheric background:
+  - Animations: twinkle (stars), float (fireflies), pulse (glow), fade-in (content)
+  - Reusable as backdrop behind terminal (40% opacity + blur)
+
+**UI Components:**
+- Full shadcn/ui library installed (button, card, dialog, tabs, toast, etc.)
+- Theme provider with dark/light mode
+- Geist + Geist Mono fonts
+
+### What we have that's better:
+- **Map:** Our Canvas 2D Firewatch-style parchment map (simplex noise, marching squares contours, 4-zone vegetation, paper grain, vignette) is far more authentic than their SVG tile grid
+- **Radio model:** Our 3D GLTF walkie-talkie with drag-to-rotate + spring physics vs their flat 2D panel
+- **Backend types:** Our `types.ts` matches the actual backend `SessionState` schema (32×32 grid, proper unit types)
+
+### Cherry-pick priority:
+1. **Landing page atmosphere** (watchtower-scene.tsx) — quick win, sets the mood
+2. **Doctrine terminal** (doctrine-terminal.tsx) — needed for game flow
+3. **Radio panel transcript** (radio-panel.tsx) — need message log alongside our 3D model
+4. **Ambient audio** (ambient-audio.tsx) — atmospheric polish
+5. **Game context** (game-context.tsx) — useful as mock simulation until backend is ready, but needs adapting to our 32×32 grid + Canvas renderer
+
+---
+
 ## Key Decisions Made
 
 - **Map aesthetic:** Keep topo/contour style (not switching to flat illustrated)
