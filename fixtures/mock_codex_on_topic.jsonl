@@ -1,9 +1,0 @@
-{"type":"thread.started","thread_id":"thread_mock_on_topic"}
-{"type":"turn.started"}
-{"type":"agent_message.delta","delta":"Inspecting repository files. "}
-{"type":"tool.started","id":"tool_shell_1","tool":"shell","input":{"cmd":"find . -maxdepth 2 -type f | sort"}}
-{"type":"tool.completed","id":"tool_shell_1","tool":"shell","output":"./AGENTS.md\n./README.md\n./.kiro/agents/pipeline-worker.md\n"}
-{"type":"reasoning_item.created","summary":"The repository already contains Kiro steering and agent configuration files relevant to the task."}
-{"type":"agent_message.delta","delta":"The workspace already contains a multi-agent supervision scaffold and no unrelated app code. "}
-{"type":"message.completed","message":"WORKER_CHECKPOINT\nobjective: inspect the repository\nstatus: complete\nvalid_artifacts: AGENTS.md, README.md, .kiro/agents/\nproposed_next_step: validate the current scaffold and add the bridge demo\n"}
-{"type":"turn.completed"}
