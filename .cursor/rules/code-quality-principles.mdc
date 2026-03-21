@@ -1,0 +1,49 @@
+---
+description: Software engineering principles including DRY, SOLID, semantic naming, meaningful abstractions, and platform thinking.
+globs: **/*
+alwaysApply: true
+---
+
+- **DRY (Don't Repeat Yourself):**
+  - Extract shared logic into reusable functions, utilities, or base classes
+  - Never duplicate code — if you write similar code twice, refactor into a shared abstraction
+  - Use decorators, mixins, or higher-order functions to eliminate repeated patterns
+  - DRY applies to logic, configuration, and test setup alike
+
+- **SOLID Principles:**
+  - **S — Single Responsibility:** Each module, class, and function should do one thing well
+  - **O — Open/Closed:** Modules should be open for extension, closed for modification — use protocols, abstract base classes, or plugin patterns
+  - **L — Liskov Substitution:** Subtypes must be substitutable for their base types without breaking behavior
+  - **I — Interface Segregation:** Prefer many small, focused interfaces (Protocols) over one large one
+  - **D — Dependency Inversion:** Depend on abstractions (protocols, interfaces), not concrete implementations — use FastAPI's `Depends()` for injection
+
+- **Semantic Naming and Abstractions:**
+  - Names should reveal intent: prefer `calculate_total_price` over `calc`
+  - Use domain language from the problem space, not implementation details
+  - Abstractions should hide complexity, not add it
+  - Each abstraction level should be internally consistent
+  - Variable names should answer *what* and *why*, function names should answer *what it does*
+
+- **Platform Thinking:**
+  - Design systems as composable, reusable components
+  - Build APIs and services that can be consumed by multiple clients
+  - Think about extensibility — will this design accommodate future requirements?
+  - Consider horizontal scalability from the start
+  - Design for observability: logging, metrics, tracing
+
+- **Code Organization:**
+  - Keep related code close together (high cohesion)
+  - Minimize dependencies between unrelated modules (low coupling)
+  - Prefer flat module hierarchies over deeply nested ones
+  - Use clear package boundaries that reflect domain boundaries
+
+- **Refactoring Discipline:**
+  - Refactor early and often — don't let technical debt accumulate
+  - Extract method/function when a block of code needs a comment to explain it
+  - Inline trivial abstractions that add indirection without value
+  - If code is hard to test, it likely has a design problem
+
+- **Architecture Adherence:**
+  - Stick to the current architecture choices located in `pyproject.toml` unless the user explicitly suggests a new method or module
+  - Document architectural decisions and their rationale
+  - When changing architecture, update all affected rules and documentation

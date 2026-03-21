@@ -1,0 +1,65 @@
+---
+description: Machine learning and LLM workflow standards including experiment configuration, data pipelines, prompt engineering, and model management.
+globs: **/ml/**/*.py, **/models/**/*.py, **/prompts/**/*.py, **/pipelines/**/*.py, **/configs/**/*.yaml, **/experiments/**/*
+alwaysApply: false
+---
+
+- **Experiment Configuration:**
+  - Use `hydra` or `yaml` for clear and reproducible experiment configurations
+  - Store all hyperparameters and settings in config files, never hardcode them
+  - Support config overrides from command line for quick experimentation
+  - Version control all configuration files
+
+- **Data Pipeline Management:**
+  - Employ scripts or tools like `dvc` to manage data preprocessing and ensure reproducibility
+  - Track data versions alongside code versions
+  - Document data transformations and their rationale
+  - Make pipelines idempotent — re-running should produce the same output
+
+- **Model Versioning:**
+  - Utilize `git-lfs` or cloud storage (S3, GCS) to track and manage model checkpoints
+  - Tag model versions with training metadata (config hash, data version, metrics)
+  - Never commit large binary files directly to git
+
+- **Experiment Logging & Tracking:**
+  - Maintain comprehensive logs of experiments including parameters, results, and environmental details
+  - Use `mlflow`, `tensorboard`, `wandb`, or similar for experiment tracking
+  - Log metrics at regular intervals during training
+  - Record the full environment (Python version, package versions, hardware) with each run
+
+- **LLM Prompt Engineering:**
+  - Dedicate a module or `prompts/` directory for managing prompt templates
+  - Version control all prompt templates
+  - Use template variables (Jinja2 or f-string based) for dynamic prompt construction
+  - Document the purpose and expected behavior of each prompt
+  - Track prompt performance metrics (accuracy, latency, cost)
+
+- **Context Handling:**
+  - Implement efficient context management for conversations
+  - Use suitable data structures like `collections.deque` with `maxlen` for sliding window context
+  - Implement token counting to stay within model context limits
+  - Handle context overflow gracefully (summarization, truncation strategies)
+
+- **LLM Frameworks:**
+  - Use `langchain`, `transformers`, or similar frameworks as appropriate
+  - Abstract LLM provider details behind a common interface for easy swapping
+  - Implement retry logic with exponential backoff for API-based LLM calls
+
+- **Demo & Prototyping:**
+  - Use `gradio` or `streamlit` for building quick interactive demos
+  - Keep demo code separate from production code
+
+- **Data Processing:**
+  - Use `pandas`, `numpy` for standard data processing
+  - Use `dask` or `pyspark` for large-scale data processing when needed
+  - Validate data at ingestion boundaries with Pydantic or custom validators
+
+- **Hyperparameter Optimization:**
+  - Use `optuna` or `hyperopt` for systematic hyperparameter search
+  - Log all trial results for analysis
+  - Define search spaces explicitly in configuration
+
+- **Vector Databases:**
+  - Use `faiss`, `chroma`, or similar for vector storage and similarity search
+  - Index management: build, update, and persist indexes properly
+  - Benchmark retrieval quality and latency

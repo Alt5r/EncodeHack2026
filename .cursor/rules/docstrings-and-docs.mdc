@@ -1,0 +1,66 @@
+---
+description: Google-style docstring requirements and documentation standards for all Python functions, methods, and classes.
+globs: **/*.py
+alwaysApply: true
+---
+
+- **Google-Style Docstrings:** Required on all public functions, methods, and classes
+  - Thoroughly explain purpose, parameters, return values, and any exceptions raised
+  - Include usage examples where helpful
+  ```python
+  # ✅ DO: Comprehensive Google-style docstring
+  def process_payment(
+      order_id: int,
+      amount: Decimal,
+      currency: str = "USD",
+  ) -> PaymentResult:
+      """Process a payment for the given order.
+
+      Validates the order exists and is in a payable state, then initiates
+      the payment through the configured payment gateway.
+
+      Args:
+          order_id: The unique identifier of the order to pay.
+          amount: The payment amount as a Decimal.
+          currency: ISO 4217 currency code. Defaults to "USD".
+
+      Returns:
+          A PaymentResult containing the transaction ID and status.
+
+      Raises:
+          OrderNotFoundError: If no order matches the given ID.
+          PaymentGatewayError: If the payment gateway is unreachable.
+
+      Example:
+          >>> result = process_payment(order_id=123, amount=Decimal("29.99"))
+          >>> result.status
+          'completed'
+      """
+  ```
+
+- **Docstring Content Requirements:**
+  - First line: concise summary of what the function/class does
+  - Blank line after summary if additional description follows
+  - `Args:` section with description for every parameter
+  - `Returns:` section describing the return value and its structure
+  - `Raises:` section listing all exceptions that may be raised
+  - `Example:` section for non-trivial functions showing usage
+
+- **Class Docstrings:**
+  - Document the class purpose and its role in the system
+  - Document `__init__` parameters in the class docstring or `__init__` docstring
+  - Document public attributes in an `Attributes:` section
+
+- **Module Docstrings:**
+  - Include a module-level docstring at the top of each file explaining its purpose
+  - List key classes or functions the module provides
+
+- **Code Comments:**
+  - Key logic should be annotated with comments explaining *why*, not *what*
+  - Do not add comments that merely restate the code
+  - Use `# TODO:`, `# FIXME:`, `# HACK:` prefixes for actionable annotations
+
+- **API Documentation:**
+  - Auto-generate API docs using FastAPI's OpenAPI support
+  - Provide meaningful descriptions on all endpoints, query parameters, and response models
+  - Use Pydantic `Field(description=...)` to enrich generated API docs
