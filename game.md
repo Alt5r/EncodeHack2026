@@ -195,13 +195,190 @@ Post the build journey throughout the hackathon.
 
 ## Tech Stack
 
-- **Frontend**: Next.js + Canvas/SVG for map, Tailwind
-- **Backend**: Python FastAPI or Node for simulation + agent orchestration
-- **Agent framework**: LangGraph (multi-agent state graph)
-- **Voice**: ElevenLabs API — distinct voice per agent role
-- **Weather**: OpenWeather API — real wind conditions
-- **Messaging**: Luffa SDK — live bot channel mirroring radio comms
-- **Leaderboard**: Postgres or SQLite
+| Layer | Tech |
+|---|---|
+| API + WebSockets | FastAPI + uvicorn |
+| Agent orchestration | LangGraph + Anthropic SDK |
+| Tool interface | MCP (`langchain-mcp-adapters`) |
+| Simulation loop | asyncio + numpy |
+| Voice | ElevenLabs async SDK |
+| Weather | httpx → OpenWeather API |
+| Messaging | Luffa SDK |
+| Leaderboard | SQLite + SQLAlchemy |
+| Frontend comms | WebSocket (state diffs + audio chunks) |
+| Frontend | Next.js + Canvas/SVG, Tailwind |
+
+Single Python process. No Redis needed — asyncio queues handle all internal communication.
+
+---
+
+## Backend Architecture
+
+### The Core Problem
+
+Simulation ticks every ~3 seconds. LLM calls take 1-5 seconds. **The simulation cannot block waiting for agents.** These two loops must be fully decoupled.
+
+**Solution: two async loops in one Python process, communicating via `asyncio.Queue`.**
+
+```
+Simulation Engine (MCP Server)
+        ↑ exposes tools via stdio MCP server
+Agent Loop (asyncio task)
+        ↓ MultiServerMCPClient loads tools dynamically
+        ↓ runs LangGraph with MCP tools
+        ↓ pushes commands to simulation's pending_actions buffer
+Simulation Loop (asyncio task, ticks every 3s)
+        ↓ applies pending_actions each tick
+        ↓ pushes state snapshot to agent queue
+```
+
+The simulation never waits for agents. Agent commands land in a buffer and get applied on the next tick. If agents are slow, the fire spreads without intervention that tick — which is realistic.
+
+---
+
+### MCP Architecture
+
+The simulation engine runs as an **MCP server**, exposing all simulation tools. LangGraph agents connect via `langchain-mcp-adapters` and discover tools dynamically — clean separation between sim and agents, no hardcoded tool bindings.
+
+```python
+from langchain_mcp_adapters.client import MultiServerMCPClient
+
+async with MultiServerMCPClient({
+    "simulation": {
+        "command": "python",
+        "args": ["simulation_mcp_server.py"],
+        "transport": "stdio"
+    }
+}) as client:
+    tools = await client.get_tools()
+    # tools = [read_map, get_agent_status, move_to, drop_water,
+    #          create_firebreak, report_status, command_agent]
+    agent = create_react_agent(model, tools)
+```
+
+**Why MCP:** the simulation and agent system are fully decoupled at the protocol level. The sim just runs its MCP server — agents discover tools without knowing anything about the implementation. This also gives the Civic track integration for free: Civic slots in as MCP middleware, intercepting tool calls between agents and the simulation to validate inputs/outputs before they execute.
+
+```
+Agent → MCP call → [Civic middleware validates] → Simulation MCP Server
+```
+
+---
+
+### LangGraph Design
+
+Use the **Send API for parallel sub-agents** — the fan-out pattern LangGraph is built for.
+
+```python
+class GameState(TypedDict):
+    map_state: dict          # grid, fire cells, agent positions, terrain
+    wind: dict               # direction, speed from OpenWeather
+    agent_states: dict       # per-agent: position, resources, status
+    pending_commands: list   # queued actions to apply next tick
+    message_log: list        # inter-agent comms for radio
+    tick: int
+    village_intact: bool
+```
+
+**Graph structure:**
+```
+orchestrator_node
+      ↓ Send API — fans out to all active sub-agents in parallel
+[helicopter_node_1, helicopter_node_2, ground_crew_node_1, ...]
+      ↓ all report back — map-reduce into orchestrator
+orchestrator_node (next cycle)
+```
+
+The orchestrator runs, reads map state, decides strategy, uses `Send` to dispatch commands to each sub-agent node simultaneously. Sub-agents execute tools in parallel via MCP, report back. Orchestrator aggregates reports, adapts. One full cycle = one agent decision round.
+
+---
+
+### MCP Tools
+
+All tools are exposed by the simulation MCP server. Agents call them like any LangChain tool — the MCP layer handles the protocol translation.
+
+**Orchestrator tools** (reads and commands only — never mutates simulation directly):
+```python
+read_map() → dict                          # current fire positions, agent positions, wind
+get_agent_status(agent_id) → dict          # resources remaining, current position
+command_agent(agent_id, action, coords)    # queues action in pending_commands
+```
+
+**Sub-agent tools** (simulation mutations):
+```python
+move_to(coords)                # updates agent position
+drop_water(coords)             # suppresses fire cells in radius
+create_firebreak(coords)       # clears cells along a line
+report_status(message: str)    # pushes to message_log → radio queue
+```
+
+`report_status` is the radio trigger. Every call pushes a message onto the ElevenLabs queue and gets voiced.
+
+---
+
+### FastAPI Endpoints
+
+```
+POST /game/start          # accepts strategy doc, spawns game session
+GET  /game/{id}/ws        # WebSocket — streams simulation state to frontend
+POST /game/{id}/end       # score + leaderboard write
+GET  /leaderboard         # top strategies
+```
+
+WebSocket broadcasts a **state diff** every tick — not the full grid, just what changed (new fire cells, agent positions, new radio message). Keeps payload lean.
+
+---
+
+### ElevenLabs Radio Queue
+
+Radio messages play **sequentially** — agents cannot talk over each other. Single `asyncio.Queue` as the TTS pipeline:
+
+```python
+# Each report_status tool call pushes here
+radio_queue: asyncio.Queue[RadioMessage]
+
+# Single consumer — processes one message at a time
+async def radio_consumer():
+    while True:
+        msg = await radio_queue.get()
+        audio = await elevenlabs.generate(msg.text, voice=msg.agent_voice)
+        await ws_manager.broadcast_audio(audio)
+        await ws_manager.broadcast_transcript(msg)
+        await luffa_bot.post(msg)
+```
+
+Each agent role has a fixed ElevenLabs voice ID assigned at game start:
+- Orchestrator → voice A (authoritative)
+- Helicopters → voice B (clipped, operational)
+- Ground crews → voice C (gritty, stressed)
+
+---
+
+### Simulation Engine
+
+Pure Python + numpy, no heavy dependencies:
+
+```python
+GRID_SIZE = 64             # 64x64 cells
+
+terrain: np.ndarray        # elevation values, generated once at game start
+fire: np.ndarray           # boolean grid — True = burning
+moisture: np.ndarray       # affects fire spread rate per cell
+agents: dict               # agent_id → position, type, resources remaining
+```
+
+**Fire spread per tick:**
+```python
+for each burning cell:
+    for each neighbor:
+        spread_prob = base_rate
+        spread_prob *= wind_factor(wind_dir, cell_direction)
+        spread_prob *= terrain_factor(elevation_delta)
+        spread_prob *= (1 - moisture[neighbor])
+        if random() < spread_prob:
+            fire[neighbor] = True
+```
+
+Wind pulled from OpenWeather once at game start, used for the full session.
 
 ---
 

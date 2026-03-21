@@ -1,8 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 
-export function WatchtowerScene() {
+interface WatchtowerSceneProps {
+  hideUI?: boolean
+}
+
+export function WatchtowerScene({ hideUI = false }: WatchtowerSceneProps) {
   const [mounted, setMounted] = useState(false)
   const [fireflies, setFireflies] = useState<Array<{ id: number; x: number; y: number; delay: number; duration: number }>>([])
 
@@ -120,26 +125,34 @@ export function WatchtowerScene() {
         />
       ))}
 
-      {/* Content overlay */}
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <div className="flex flex-col items-center gap-12 animate-fade-in">
-          <h1 className="text-5xl font-bold tracking-[0.3em] text-amber-100/90 drop-shadow-lg md:text-7xl">
-            WATCHTOWER
-          </h1>
+      {/* Content overlay - hidden when used as background */}
+      {!hideUI && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="flex flex-col items-center gap-12 animate-fade-in">
+            <h1 className="text-5xl font-bold tracking-[0.3em] text-amber-100/90 drop-shadow-lg md:text-7xl">
+              WATCHTOWER
+            </h1>
 
-          <div className="flex flex-col items-center gap-4">
-            <button className="group relative px-8 py-3 text-sm font-medium tracking-widest text-amber-100/90 uppercase transition-all duration-300 hover:text-amber-200 border border-amber-100/30 hover:border-amber-200/50 hover:bg-amber-100/5">
-              Deploy Default Agent
-              <span className="absolute inset-0 -z-10 bg-amber-100/5 opacity-0 transition-opacity group-hover:opacity-100" />
-            </button>
+            <div className="flex flex-col items-center gap-4">
+              <Link 
+                href="/game"
+                className="group relative px-8 py-3 text-sm font-medium tracking-widest text-amber-100/90 uppercase transition-all duration-300 hover:text-amber-200 border border-amber-100/30 hover:border-amber-200/50 hover:bg-amber-100/5"
+              >
+                Deploy Default Agent
+                <span className="absolute inset-0 -z-10 bg-amber-100/5 opacity-0 transition-opacity group-hover:opacity-100" />
+              </Link>
 
-            <button className="group relative px-8 py-3 text-sm font-medium tracking-widest text-amber-100/60 uppercase transition-all duration-300 hover:text-amber-100/90 border border-amber-100/20 hover:border-amber-100/40 hover:bg-amber-100/5">
-              Write Your Doctrine
-              <span className="absolute inset-0 -z-10 bg-amber-100/5 opacity-0 transition-opacity group-hover:opacity-100" />
-            </button>
+              <Link 
+                href="/terminal"
+                className="group relative px-8 py-3 text-sm font-medium tracking-widest text-amber-100/60 uppercase transition-all duration-300 hover:text-amber-100/90 border border-amber-100/20 hover:border-amber-100/40 hover:bg-amber-100/5"
+              >
+                Write Your Doctrine
+                <span className="absolute inset-0 -z-10 bg-amber-100/5 opacity-0 transition-opacity group-hover:opacity-100" />
+              </Link>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Vignette */}
       <div 

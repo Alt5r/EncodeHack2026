@@ -1,1 +1,16 @@
+<<<<<<< HEAD
 .worktrees/
+=======
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+.env
+
+watchtower.db
+data/
+
+.DS_Store
+>>>>>>> 51c30db116d9572c1b1c9ad3ecc708969fd22c67

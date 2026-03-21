@@ -1,0 +1,80 @@
+---
+description: FastAPI application structure, routing, middleware, security, and API design best practices.
+globs: **/app/**/*.py, **/routers/**/*.py, **/api/**/*.py, **/main.py
+alwaysApply: false
+---
+
+- **Framework:** FastAPI with Pydantic v2
+  - Refer to FastAPI documentation for Data Models, Path Operations, and Middleware for best practices
+
+- **Application Structure:**
+  - File structure: exported router, sub-routes, utilities, static content, types (models, schemas)
+  - Use functional components (plain functions) and Pydantic models for input validation and response schemas
+  - Use declarative route definitions with clear return type annotations
+  - Use `def` for synchronous operations and `async def` for asynchronous ones
+
+- **Lifecycle Management:**
+  - Minimize `@app.on_event("startup")` and `@app.on_event("shutdown")`
+  - Prefer lifespan context managers for managing startup and shutdown events:
+  ```python
+  # ✅ DO: Use lifespan context manager
+  from contextlib import asynccontextmanager
+
+  @asynccontextmanager
+  async def lifespan(app: FastAPI):
+      # Startup logic
+      await init_db()
+      yield
+      # Shutdown logic
+      await close_db()
+
+  app = FastAPI(lifespan=lifespan)
+
+  # ❌ DON'T: Use deprecated on_event
+  @app.on_event("startup")
+  async def startup():
+      await init_db()
+  ```
+
+- **Routing:**
+  - Define clear and RESTful API routes using FastAPI's `APIRouter`
+  - Group related routes into separate router modules
+  - Use path prefixes and tags for organization
+  - Favor named exports for routes and utility functions
+
+- **Dependency Injection:**
+  - Effectively use FastAPI's `Depends()` for managing dependencies
+  - Use dependency injection for database sessions, auth, config, and shared services
+  - Cache expensive dependencies where appropriate using `Depends` with caching
+
+- **Middleware:**
+  - Use middleware for logging, error monitoring, and performance optimization
+  - Use middleware for handling unexpected errors
+  - Use middleware for CORS configuration
+  - Keep middleware lightweight to avoid latency overhead
+
+- **Background Tasks:**
+  - Utilize FastAPI's `BackgroundTasks` for lightweight async work
+  - Integrate with Celery for heavy or long-running background processing
+
+- **Security:**
+  - Implement robust authentication and authorization (e.g., OAuth 2.0, JWT)
+  - Always consider security implications when dealing with user inputs and external data
+  - Validate and sanitize all incoming data
+
+- **API Versioning:**
+  - Plan for API versioning from the start
+  - Use URL prefixes (e.g., `/api/v1/`) or headers for version routing
+
+- **CORS:**
+  - Configure Cross-Origin Resource Sharing settings correctly
+  - Be explicit about allowed origins, methods, and headers
+
+- **API Documentation:**
+  - Auto-generate API documentation using FastAPI's built-in OpenAPI support
+  - Provide meaningful descriptions for endpoints, parameters, and response models
+
+- **Server Deployment:**
+  - Use `uvicorn` as the ASGI server, optionally behind `gunicorn` for process management
+  - Use `nginx` or `caddy` as reverse proxy
+  - Use `systemd` or `supervisor` for process management

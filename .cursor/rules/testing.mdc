@@ -1,0 +1,50 @@
+---
+description: Testing standards using pytest including coverage targets, test organization, and edge case handling.
+globs: **/tests/**/*.py, **/test_*.py, **/*_test.py
+alwaysApply: false
+---
+
+- **Framework:** `pytest` is the standard testing framework
+  - Do not use `unittest` unless integrating with legacy code
+
+- **Coverage Target:** Aim for 90% or higher test coverage
+  - Use `pytest-cov` to measure and enforce coverage thresholds
+  - Track coverage in CI pipelines
+
+- **Test Organization:**
+  - Mirror the source directory structure inside `tests/`
+  - Name test files with `test_` prefix: `test_user_service.py`
+  - Name test functions with `test_` prefix: `test_create_user_returns_201`
+  - Group related tests into classes when they share setup: `class TestUserCreation:`
+  - Use `conftest.py` for shared fixtures scoped to directories
+
+- **Test Scope:**
+  - Test both common/happy-path cases and edge cases
+  - Test error paths and exception handling explicitly
+  - Test boundary conditions (empty inputs, max values, None, etc.)
+  - Test async code with `pytest-asyncio`
+
+- **Fixtures:**
+  - Use `@pytest.fixture` for reusable setup and teardown
+  - Prefer factory fixtures for creating test objects with customizable parameters
+  - Use appropriate scopes: `function` (default), `class`, `module`, `session`
+  - Use `tmp_path` for temporary file operations
+
+- **Mocking:**
+  - Use `pytest-mock` or `unittest.mock` for mocking external dependencies
+  - Mock at the boundary — mock HTTP clients, databases, external APIs
+  - Avoid mocking internal implementation details
+
+- **Assertions:**
+  - Use plain `assert` statements (pytest rewrites them for rich output)
+  - Use `pytest.raises()` to assert expected exceptions
+  - Use `pytest.approx()` for floating-point comparisons
+
+- **Test Data:**
+  - Use factories (e.g., `factory_boy`) or fixture functions for test data creation
+  - Keep test data minimal — only specify fields relevant to the test
+  - Avoid sharing mutable state between tests
+
+- **Code Examples:**
+  - Provide usage examples in `tests/` directory or as `if __name__ == "__main__":` sections
+  - Examples should be self-contained and executable without extensive modification

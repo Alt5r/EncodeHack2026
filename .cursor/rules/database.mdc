@@ -1,0 +1,54 @@
+---
+description: Database interaction patterns including async libraries, SQLAlchemy 2.0, query optimization, and schema design.
+globs: **/db/**/*.py, **/models/**/*.py, **/repositories/**/*.py, **/migrations/**/*.py
+alwaysApply: false
+---
+
+- **Async Database Libraries:**
+  - Use `asyncpg` for PostgreSQL async access
+  - Use `aiomysql` for MySQL async access
+  - Use `aiosqlite` for SQLite async access during development
+  - Never use synchronous database drivers in async FastAPI routes
+
+- **SQLAlchemy 2.0:**
+  - Use SQLAlchemy 2.0 style with the new `select()` API when using ORM features
+  - Use async sessions via `async_sessionmaker` and `AsyncSession`
+  - Prefer the `mapped_column()` declarative approach for model definitions
+  ```python
+  # ✅ DO: SQLAlchemy 2.0 style
+  from sqlalchemy.orm import Mapped, mapped_column
+  from sqlalchemy import String
+
+  class User(Base):
+      __tablename__ = "users"
+      id: Mapped[int] = mapped_column(primary_key=True)
+      email: Mapped[str] = mapped_column(String(255), unique=True)
+
+  # ❌ DON'T: SQLAlchemy 1.x style
+  class User(Base):
+      __tablename__ = "users"
+      id = Column(Integer, primary_key=True)
+      email = Column(String(255), unique=True)
+  ```
+
+- **Query Optimization:**
+  - Design database schemas efficiently with proper normalization
+  - Use indexes wisely — index columns used in WHERE, JOIN, and ORDER BY
+  - Avoid N+1 queries: use `selectinload()` or `joinedload()` for relationships
+  - Batch inserts/updates using `executemany` or bulk operations
+  - Use `EXPLAIN ANALYZE` to profile slow queries
+
+- **Connection Management:**
+  - Use connection pooling (SQLAlchemy's built-in pool or `asyncpg` pool)
+  - Configure pool size, max overflow, and pool timeout appropriately
+  - Always close sessions and connections properly — use context managers or dependency injection
+
+- **Migrations:**
+  - Use Alembic for database schema migrations
+  - Keep migrations atomic and reversible where possible
+  - Test migrations both up and down
+
+- **Blocking I/O Prevention:**
+  - Minimize blocking I/O operations
+  - Use asynchronous operations for all database calls
+  - If a synchronous library must be used, run it in a thread pool via `asyncio.to_thread()`
