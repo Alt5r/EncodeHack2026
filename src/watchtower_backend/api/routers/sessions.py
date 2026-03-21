@@ -6,8 +6,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from watchtower_backend.api.dependencies import SessionManagerDependency
 from watchtower_backend.api.schemas.sessions import SessionCreateRequest, SessionDetail, SessionRead
-from watchtower_backend.services.sessions.manager import SessionManager
 from watchtower_backend.domain.models.simulation import TerrainCell
+from watchtower_backend.services.sessions.manager import SessionManager
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 

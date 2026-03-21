@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from random import Random
 
 from watchtower_backend.core.errors import CommandValidationError
@@ -257,7 +257,11 @@ class SimulationEngine:
             # Update intensity (only progresses upward, never drops back)
             if fire_state.intensity != FireIntensity.INFERNO:
                 terrain = self._get_terrain(coord)
-                if fire_state.burn_ticks >= 5 and terrain.vegetation == VegetationType.FOREST and fire_state.fuel > 0.5:
+                if (
+                    fire_state.burn_ticks >= 5
+                    and terrain.vegetation == VegetationType.FOREST
+                    and fire_state.fuel > 0.5
+                ):
                     fire_state.intensity = FireIntensity.INFERNO
                 elif fire_state.burn_ticks >= 2:
                     fire_state.intensity = FireIntensity.BURNING
@@ -390,7 +394,15 @@ class SimulationEngine:
         # Intensity factor (source cell)
         intensity_factor = _INTENSITY_SPREAD[fire_state.intensity]
 
-        prob = _BASE_RATE * veg_factor * wind_factor * slope_factor * moisture_factor * diagonal_factor * intensity_factor
+        prob = (
+            _BASE_RATE
+            * veg_factor
+            * wind_factor
+            * slope_factor
+            * moisture_factor
+            * diagonal_factor
+            * intensity_factor
+        )
         return max(0.0, min(_MAX_SPREAD_PROB, prob))
 
     # --- Suppression ---

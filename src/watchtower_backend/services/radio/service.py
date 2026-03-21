@@ -7,7 +7,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
-import luffa_bot
 from elevenlabs.client import AsyncElevenLabs
 
 from watchtower_backend.core.config import Settings
@@ -17,6 +16,7 @@ from watchtower_backend.domain.models.simulation import SessionState
 logger = logging.getLogger(__name__)
 
 type RadioEventPublisher = Callable[[str, str, dict[str, object]], Awaitable[None]]
+type LuffaRadioRelay = Callable[[RadioMessage], Awaitable[None]]
 
 
 class InMemoryRadioService:
@@ -60,8 +60,7 @@ class CompositeRadioService:
         self._worker_task: asyncio.Task[None] | None = None
         self._audio_directory = settings.audio_directory
         self._audio_directory.mkdir(parents=True, exist_ok=True)
-        if settings.luffa_robot_key:
-            luffa_bot.set_robot_key(settings.luffa_robot_key)
+        self._luffa_relay: LuffaRadioRelay | None = None
 
     async def start(self) -> None:
         """Start the background worker."""
@@ -74,6 +73,17 @@ class CompositeRadioService:
             self._worker_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._worker_task
+
+    def bind_luffa_relay(self, relay: LuffaRadioRelay | None) -> None:
+        """Attach or clear the optional Luffa radio relay callback.
+
+        Args:
+            relay: Async function to deliver formatted radio lines to Luffa, or None.
+
+        Returns:
+            None.
+        """
+        self._luffa_relay = relay
 
     async def publish(self, session_state: SessionState, message: RadioMessage) -> None:
         """Queue radio side effects for background processing.
@@ -152,14 +162,10 @@ class CompositeRadioService:
         return f"/media/audio/{session_id}/{message.message_id}.mp3"
 
     async def _maybe_send_to_luffa(self, message: RadioMessage) -> None:
-        """Relay the radio message to Luffa when configured."""
-        if not self._settings.luffa_robot_key or not self._settings.luffa_group_uid:
+        """Relay the radio message to Luffa when a relay callback is bound."""
+        if self._luffa_relay is None:
             return
-
-        await luffa_bot.send_to_group(
-            uid=self._settings.luffa_group_uid,
-            payload=f"{message.speaker}: {message.text}",
-        )
+        await self._luffa_relay(message)
 
     def _resolve_voice_id(self, voice_key: str) -> str | None:
         """Resolve a logical voice key to an ElevenLabs voice id."""

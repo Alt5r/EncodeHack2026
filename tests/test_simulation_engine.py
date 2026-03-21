@@ -10,7 +10,7 @@ from watchtower_backend.domain.models.simulation import (
     WindState,
 )
 from watchtower_backend.services.sessions.runtime import build_initial_state
-from watchtower_backend.services.simulation.engine import SimulationEngine, _CellFireState
+from watchtower_backend.services.simulation.engine import SimulationEngine
 
 
 def _make_terrain_grid(
@@ -101,7 +101,11 @@ def test_water_blocks_fire_spread() -> None:
     grid = _make_terrain_grid(size=24)
     # Place a river wall at column 5
     for row in range(24):
-        grid[row][5] = TerrainCell(elevation=0.3, vegetation=VegetationType.WOODLAND, water=WaterType.WATER)
+        grid[row][5] = TerrainCell(
+            elevation=0.3,
+            vegetation=VegetationType.WOODLAND,
+            water=WaterType.WATER,
+        )
 
     # Fire starts at (10, 4) — river is at column 5
     engine = _make_engine(fire_cells=[(10, 4)], terrain_grid=grid, seed=1)
@@ -119,7 +123,11 @@ def test_water_proximity_increases_moisture() -> None:
     """Cells adjacent to water should have higher moisture, reducing spread chance."""
     grid = _make_terrain_grid(size=24)
     # Place lake at (10, 10)
-    grid[10][10] = TerrainCell(elevation=0.3, vegetation=VegetationType.WOODLAND, water=WaterType.WATER)
+    grid[10][10] = TerrainCell(
+        elevation=0.3,
+        vegetation=VegetationType.WOODLAND,
+        water=WaterType.WATER,
+    )
 
     engine = _make_engine(terrain_grid=grid)
 

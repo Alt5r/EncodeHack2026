@@ -3,22 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watchtower_backend.core.config import Settings
 from watchtower_backend.core.errors import SessionNotFoundError
-from watchtower_backend.domain.events import BroadcastEnvelope
+from watchtower_backend.domain.events import BroadcastEnvelope, SessionEvent
 from watchtower_backend.domain.models.simulation import GameStatus, SessionState, TerrainCell
 from watchtower_backend.domain.protocols import Planner, RadioSink, WeatherProvider
+from watchtower_backend.persistence.models import LeaderboardEntryModel
 from watchtower_backend.persistence.replay_store import ReplayStore
 from watchtower_backend.persistence.repositories.leaderboard import (
     LeaderboardRepository,
     ReplayIndexRepository,
 )
 from watchtower_backend.services.sessions.runtime import SessionRuntime, build_initial_state
+
+type SessionEventListener = Callable[[SessionEvent], Awaitable[None]]
+type RegisterSessionHook = Callable[[str], None]
 
 
 class SessionManager:
@@ -59,6 +63,8 @@ class SessionManager:
         doctrine_text: str,
         doctrine_title: str | None = None,
         terrain_grid: list[list[TerrainCell]] | None = None,
+        session_event_listener: SessionEventListener | None = None,
+        register_session_hook: RegisterSessionHook | None = None,
     ) -> SessionState:
         """Create and start a new session runtime.
 
@@ -66,6 +72,8 @@ class SessionManager:
             doctrine_text: Doctrine text entered by the player.
             doctrine_title: Optional doctrine title.
             terrain_grid: Optional terrain grid from the frontend.
+            session_event_listener: Optional hook receiving each emitted session event.
+            register_session_hook: Optional sync hook; receives session id before runtime starts.
 
         Returns:
             Initial session state.
@@ -87,9 +95,12 @@ class SessionManager:
             max_event_backlog=self._settings.max_session_event_backlog,
             seed=sum(ord(character) for character in session_state.id),
             terrain_grid=terrain_grid,
+            session_event_listener=session_event_listener,
         )
         async with self._lock:
             self._runtimes[session_state.id] = runtime
+        if register_session_hook is not None:
+            register_session_hook(session_state.id)
         await runtime.start()
         self._monitor_tasks[session_state.id] = asyncio.create_task(
             self._monitor_runtime(session_id=session_state.id, runtime=runtime)
@@ -158,6 +169,18 @@ class SessionManager:
         """
         for session_id in list(self._runtimes.keys()):
             await self.stop_session(session_id=session_id)
+
+    async def list_leaderboard_top(self, limit: int = 10) -> list[LeaderboardEntryModel]:
+        """Return persisted leaderboard rows ordered best-first.
+
+        Args:
+            limit: Maximum rows to return.
+
+        Returns:
+            ORM models for top entries.
+        """
+        async with self._session_factory() as session:
+            return await self._leaderboard_repository.list_top(session=session, limit=limit)
 
     async def publish_external_event(
         self,
