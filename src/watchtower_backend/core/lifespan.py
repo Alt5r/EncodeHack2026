@@ -17,7 +17,8 @@ from watchtower_backend.core.config import get_settings
 from watchtower_backend.persistence.db import Base, create_engine, create_session_factory
 from watchtower_backend.services.integrations.luffa import LuffaBot
 from watchtower_backend.services.integrations.weather import OpenWeatherProvider
-from watchtower_backend.services.planning.orchestrator import AnthropicPlanner, HeuristicPlanner
+from watchtower_backend.services.planning.graph_planner import LangGraphPlanner
+from watchtower_backend.services.planning.orchestrator import HeuristicPlanner
 from watchtower_backend.services.radio.service import CompositeRadioService
 from watchtower_backend.services.sessions.manager import SessionManager
 
@@ -77,12 +78,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             settings=settings,
             http_client=http_client,
         ),
-        planner=AnthropicPlanner(
-            model=settings.planner_model,
+        planner=LangGraphPlanner(
+            orchestrator_model=settings.planner_orchestrator_model,
+            subagent_model=settings.planner_subagent_model,
             timeout_seconds=settings.planner_timeout_seconds,
             max_tokens=settings.planner_max_tokens,
             fallback_planner=fallback_planner,
             anthropic_client=anthropic_client,
+            orchestrator_max_tokens=settings.planner_orchestrator_max_tokens,
+            subagent_max_tokens=settings.planner_subagent_max_tokens,
+            graph_invoke_timeout_seconds=settings.planner_graph_invoke_timeout_seconds,
+            radio_sink=radio_service,
         ),
         radio_sink=radio_service,
     )

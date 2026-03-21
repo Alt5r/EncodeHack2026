@@ -8,7 +8,7 @@ This document explains the current backend so another agent or teammate can quic
 
 ## High-Level Summary
 
-WATCHTOWER is a FastAPI backend for a wildfire simulation game.
+WATCHTOWER is a FastAPI backend for a wildfire simulation game with a hierarchical multi-agent AI system.
 
 The backend currently provides:
 - REST endpoints for sessions, leaderboard, health, and replays
@@ -17,10 +17,10 @@ The backend currently provides:
 - a session runtime that ticks the sim and calls a planner
 - persistence for leaderboard entries and replay logs
 - integration seams for:
-  - Anthropic planning
+  - Anthropic planning (orchestrator + sub-agents)
   - OpenWeather wind lookup
-  - ElevenLabs audio generation
-  - Luffa radio relay
+  - ElevenLabs audio generation (per-role voices)
+  - Luffa bot (interactive command interface + radio relay)
 
 The architecture is intentionally split into:
 - `api/`: HTTP + WebSocket surface
@@ -29,6 +29,30 @@ The architecture is intentionally split into:
 - `services/`: runtime logic and integrations
 - `persistence/`: DB and replay storage
 - `tests/`: coverage for core behavior
+
+### Target Multi-Agent Architecture
+
+The planner layer is evolving from a single `AnthropicPlanner` (outputs all `UnitCommand`s at once) toward a two-tier hierarchy:
+
+```
+Orchestrator (Claude Sonnet)
+  → reads full game state + user doctrine
+  → outputs Missions (high-level intent per unit)
+  → runs every planner interval (~5s)
+
+Sub-agents (Claude Haiku, one per unit type)
+  → reads assigned Mission + local unit state
+  → outputs proposed UnitCommand + radio_message
+  → only called when mission changes or unit reports failure
+  → runs in parallel via LangGraph Send API
+
+Validator
+  → merges proposed commands
+  → rejects illegal/stale commands
+  → passes to SimulationEngine.step() — single authority gate
+```
+
+This keeps the sim loop non-blocking: sub-agents only fire on mission change or failure, not every tick. Cost stays manageable (3-5 Haiku calls per orchestrator cycle, not N×ticks).
 
 ## Runtime Flow
 
@@ -269,15 +293,49 @@ Contains:
 - deterministic fallback planner
 - keeps the game running even without API keys or when the LLM fails
 
-`AnthropicPlanner`:
+`AnthropicPlanner` (current — single planner shape):
 - builds a structured prompt
 - requests JSON output
 - validates it
 - converts it into `UnitCommand`s
 - falls back to heuristic planning if anything fails
 
+**Planned: two-tier planner shape**
+
+`OrchestratorPlanner` (Claude Sonnet):
+- receives full `SessionState` + user doctrine
+- outputs `list[Mission]` — high-level intent per unit, not low-level grid moves
+- runs on the existing planner interval
+
+`SubAgentPlanner` (Claude Haiku, per unit type):
+- receives a single `Mission` + the unit's local state (position, resources, nearby fire/terrain)
+- outputs `SubAgentResponse`: a proposed `UnitCommand` + a `radio_message` string
+- called only when a unit's mission changes or a unit reports failure
+- runs in parallel for all affected units (LangGraph Send API)
+
+`Mission` shape (to be added to `domain/commands.py`):
+```python
+class Mission(BaseModel):
+    agent_id: str
+    intent: str          # "suppress" | "firebreak" | "reserve" | "reposition"
+    target: tuple[int, int]
+    priority: int
+    reason: str          # used as seed for radio message generation
+```
+
+`SubAgentResponse` shape:
+```python
+class SubAgentResponse(BaseModel):
+    proposed_command: UnitCommand
+    radio_message: str   # e.g. "Moving to grid F7, beginning suppression approach"
+```
+
 ### `src/watchtower_backend/services/planning/prompts.py`
 Builds the planner prompt from `SessionState`.
+
+Will need to be split into:
+- `orchestrator_prompt(state, doctrine)` — strategic context, full map
+- `subagent_prompt(unit_state, mission, local_context)` — narrow tactical context
 
 If planning quality is poor, this file is one of the top tuning points.
 
@@ -285,6 +343,8 @@ If planning quality is poor, this file is one of the top tuning points.
 Pydantic schemas for model-generated planner output.
 
 Used to validate the Anthropic response before it becomes runtime commands.
+
+Will expand to include `MissionBatch` and `SubAgentResponse` schemas when the two-tier planner is wired.
 
 ### `src/watchtower_backend/services/integrations/weather.py`
 Weather provider implementations.
@@ -307,12 +367,139 @@ Contains:
 
 `CompositeRadioService`:
 - queues radio work so the sim loop does not block
-- may generate ElevenLabs audio
-- may send messages to Luffa
-- may emit `radio.audio_ready` events back into the session
+- generates ElevenLabs audio per message (voice assigned by agent role)
+- sends messages to Luffa channel
+- emits `radio.audio_ready` events back into the session
 
 Important design:
 - radio side effects are asynchronous and decoupled from gameplay ticks
+- messages play sequentially — single consumer so agents never talk over each other
+- each agent role has a fixed ElevenLabs voice ID (set in config):
+  - Orchestrator → `WATCHTOWER_ELEVENLABS_COMMAND_VOICE_ID` (authoritative)
+  - Helicopters → `WATCHTOWER_ELEVENLABS_HELICOPTER_VOICE_ID` (clipped, operational)
+  - Ground crews → `WATCHTOWER_ELEVENLABS_GROUND_VOICE_ID` (gritty, stressed)
+
+### Luffa Bot — Interactive Command Interface
+
+The Luffa integration is not just a passive radio relay. It is the primary command interface for the LuffaNator track.
+
+**SDK:** `luffa-bot-python-sdk` (PyPI: `pip install luffa-bot-python-sdk`) — fully async, httpx-based, drops straight into FastAPI/asyncio. Source: https://github.com/sabma-labs/luffa-bot-python-sdk
+
+**Key models:**
+
+```python
+# Incoming
+IncomingMessage:  atList, text, urlLink, msgId, uid
+IncomingEnvelope: uid, count, messages, type  # type 0=DM, 1=group
+
+# Outgoing
+GroupMessagePayload: text, atList, confirm, button, dismissType
+SimpleButton:        name, selector, isHidden
+ConfirmButton:       name, selector, type ("default"|"destructive"), isHidden
+AtMention:           name, did, length, location, userType
+```
+
+**Button selectors return as plain text messages** — when a user taps a button with `selector="deploy_yes"`, the bot receives `msg.text == "deploy_yes"`. This is how the `/deploy` confirm flow is handled.
+
+**Polling runner built-in** — `luffa_bot.polling.run()` handles deduplication (FIFO-capped deque), concurrency via semaphore, middleware pipeline, and error hooks. No need to build any of that manually.
+
+**What the Luffa bot does:**
+
+Users interact with the bot directly in a Luffa channel — no website required to participate:
+
+```
+/deploy [doctrine]   — submit strategy doc, start a game session
+/status              — bot queries live game state, replies in plain English
+/agents              — current unit positions and assignments
+/fire                — fire front progress, estimated time to village
+/leaderboard         — top strategies this session
+```
+
+**`/deploy` flow with confirm buttons:**
+
+```python
+from luffa_bot.models import GroupMessagePayload, ConfirmButton
+
+# Bot receives /deploy command → replies with confirm buttons
+payload = GroupMessagePayload(
+    text=f"Deploy this doctrine?\n\n\"{doctrine[:120]}...\"",
+    confirm=[
+        ConfirmButton(name="Deploy", selector="deploy_yes", type="default"),
+        ConfirmButton(name="Cancel", selector="deploy_no",  type="destructive"),
+    ]
+)
+await client.send_to_group(env.uid, payload, message_type=2)
+
+# User taps Deploy → bot receives msg.text == "deploy_yes" → calls session_manager.create_session()
+```
+
+**Automatic event announcements (no command needed):**
+- fire jumps a firebreak → bot posts alert to channel
+- unit runs out of water/fuel → bot posts
+- village under immediate threat → bot posts urgently
+- win/lose → bot posts result with score and doctrine snippet
+
+**Radio relay in Luffa:**
+
+Every `radio_message` from a sub-agent or orchestrator is posted to the Luffa channel with callsign formatting:
+
+```
+🚁 ALPHA-1: Water drop complete at grid F7. Fire suppressed 60%. Moving to secondary.
+🌲 GROUND-2: Firebreak established south treeline. Fire is close. Requesting support.
+📡 COMMAND: Copy Ground-2. Bravo redirect north flank immediately. Ground-1 reinforce south.
+```
+
+This makes the Luffa channel a live mission log. People on their phones see the same drama playing out in text that the frontend shows in audio and visuals.
+
+**Python integration shape:**
+
+```python
+# New file: services/integrations/luffa.py
+from luffa_bot.client import AsyncLuffaClient
+from luffa_bot.models import GroupMessagePayload, ConfirmButton, SimpleButton
+from luffa_bot.polling import run as polling_run
+
+class LuffaBot:
+    def __init__(self, secret: str, group_uid: str):
+        self.client = AsyncLuffaClient(secret)
+        self.group_uid = group_uid
+
+    async def start_polling(self, session_manager: SessionManager):
+        """asyncio task — wraps polling_run() with command handler"""
+        await polling_run(
+            self.client,
+            handler=self._make_handler(session_manager),
+            interval=1.0,
+            concurrency=3,
+            dedupe=True,
+        )
+
+    async def send_group(self, text: str):
+        """posts plain text to the configured group channel"""
+        await self.client.send_to_group(self.group_uid, text, message_type=1)
+
+    async def send_group_buttons(self, text: str, buttons: list[ConfirmButton]):
+        """posts interactive confirm button message to the group"""
+        payload = GroupMessagePayload(text=text, confirm=buttons)
+        await self.client.send_to_group(self.group_uid, payload, message_type=2)
+
+    async def on_radio_message(self, msg: RadioMessage):
+        """called by CompositeRadioService — formats callsign and posts to group"""
+        prefix = {"command": "📡 COMMAND", "helicopter": "🚁", "ground": "🌲"}.get(msg.role, "📻")
+        await self.send_group(f"{prefix} {msg.callsign}: {msg.text}")
+
+    async def on_session_event(self, event: SessionEvent):
+        """called for major events (village threatened, win/lose) — posts alerts"""
+        ...
+```
+
+Wired in `core/lifespan.py` alongside the existing `CompositeRadioService`. The bot's polling task is started as an `asyncio.create_task()` in lifespan and cancelled cleanly on shutdown. No separate httpx client needed — `AsyncLuffaClient` manages its own connection pool.
+
+**Why this hits LuffaNator criteria:**
+- agentic automation — bot autonomously manages the full game session from doctrine to result
+- coordinates users — multiple players in one channel, strategies competing on leaderboard
+- interacts with external systems — calls Watchtower backend, OpenWeather, simulation state
+- not a chatbot — it is orchestrating a real multi-agent system on behalf of the user
 
 ### `src/watchtower_backend/services/projections/websocket.py`
 Maintains per-session subscriber queues.
@@ -452,6 +639,20 @@ Start in:
 - `services/integrations/`
 - `core/lifespan.py`
 
+### evolve single planner → orchestrator + sub-agents
+Start in:
+- `domain/commands.py` — add `Mission` and `SubAgentResponse` models
+- `services/planning/orchestrator.py` — split `AnthropicPlanner` into `OrchestratorPlanner` + `SubAgentPlanner`
+- `services/planning/prompts.py` — split prompt builders for each tier
+- `services/planning/schemas.py` — add `MissionBatch` and `SubAgentResponse` schemas
+- `services/sessions/runtime.py` — update planner call to run orchestrator then parallel sub-agents
+
+### make Luffa bot interactive
+Start in:
+- `services/integrations/luffa.py` (or equivalent) — add command handling for `/deploy`, `/status`, `/agents`, `/fire`, `/leaderboard`
+- `services/sessions/manager.py` — expose state query methods the bot needs
+- `core/lifespan.py` — wire Luffa bot as a listener to session events for automatic announcements
+
 ### debug why frontend realtime updates are wrong
 Start in:
 - `services/projections/websocket.py`
@@ -518,13 +719,15 @@ def step(self, commands: list[UnitCommand]) -> list[dict[str, object]]:
         mutation_records.extend(self._apply_command(command=command))
     new_fire_cells = self._spread_fire()
 
-Current Limitations
-planner prompt/JSON contract is still relatively simple
-sub-agents are not yet fully independent LLM agents
-replay analysis/debriefing is still basic
-no auth / multi-tenant concerns yet
-no migration system yet; tables are created directly on startup
-no production deployment docs yet
+## Current Limitations
+
+- planner prompt/JSON contract is still relatively simple — single `AnthropicPlanner` outputs all `UnitCommand`s at once
+- sub-agents are not yet independent LLM agents — next step is splitting into `OrchestratorPlanner` (Sonnet) + `SubAgentPlanner` (Haiku) with `Mission` objects as the intermediate layer
+- Luffa integration is currently a passive relay — needs to become an interactive bot handling `/deploy`, `/status`, event announcements
+- replay analysis/debriefing is still basic
+- no auth / multi-tenant concerns yet
+- no migration system yet; tables are created directly on startup
+- no production deployment docs yet
 Short Version For Another Agent
 If you only read five files, read these in order:
 

@@ -164,7 +164,8 @@ class SessionRuntime:
                     session_state=self._session_state.model_copy(deep=True)
                 )
                 last_plan_at = now
-                await self._emit_planner_messages(commands=commands)
+                if getattr(self._planner, "bundles_command_radio", True):
+                    await self._emit_planner_messages(commands=commands)
 
             try:
                 mutations = self._engine.step(commands=commands)

@@ -22,7 +22,12 @@ class HeuristicPlanner:
     The planner prioritizes protecting the village while steering helicopters
     toward the nearest fire clusters and ground crews toward a defensive line
     above the village.
+
+    Attributes:
+        bundles_command_radio: When True, `SessionRuntime` emits one aggregate command radio line.
     """
+
+    bundles_command_radio: bool = True
 
     async def plan(self, session_state: SessionState) -> list[UnitCommand]:
         """Plan the next wave of unit commands.
@@ -77,7 +82,13 @@ class HeuristicPlanner:
 
 
 class AnthropicPlanner:
-    """LLM-backed planner with deterministic fallback behavior."""
+    """LLM-backed planner with deterministic fallback behavior.
+
+    Attributes:
+        bundles_command_radio: When True, `SessionRuntime` emits one aggregate command radio line.
+    """
+
+    bundles_command_radio: bool = True
 
     def __init__(
         self,
