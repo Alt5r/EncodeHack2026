@@ -7,7 +7,7 @@ function getGridDims(heightmap: Float32Array): { GRID_W: number; GRID_H: number 
   return { GRID_W: side, GRID_H: side };
 }
 
-export type WaterType = 'none' | 'water';
+export type WaterType = 'none' | 'river' | 'lake';
 
 export interface CellTerrain {
   elevation: number;         // 0–1 raw
@@ -49,7 +49,7 @@ export function getWaterMap(
       const col = Math.floor((pt.x / GRID_W) * gridSize);
       const row = Math.floor((pt.y / GRID_H) * gridSize);
       if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
-        map.set(`${row},${col}`, 'water');
+        map.set(`${row},${col}`, 'lake');
       }
     }
   }
@@ -62,7 +62,8 @@ export function getWaterMap(
       const row = Math.floor((pt.y / GRID_H) * gridSize);
       if (row >= 0 && row < gridSize && col >= 0 && col < gridSize) {
         const key = `${row},${col}`;
-        if (!map.has(key)) map.set(key, 'water');
+        // Lakes take priority — don't overwrite a lake cell with river
+        if (!map.has(key)) map.set(key, 'river');
       }
     }
   }
@@ -180,10 +181,14 @@ export function getCellTerrain(
   let traversalScore = slopeScore * 0.5 + vegScore * 0.5;
 
   let traversalDifficulty: string;
-  if (waterType !== 'none') {
-    // Water cells are impassable for ground units
+  if (waterType === 'lake') {
+    // Lakes are impassable for ground units
     traversalScore = 1.0;
-    traversalDifficulty = 'Impassable (Water)';
+    traversalDifficulty = 'Impassable (Lake)';
+  } else if (waterType === 'river') {
+    // Rivers are passable but very difficult (wading/fording)
+    traversalScore = 0.85;
+    traversalDifficulty = 'Very Difficult (River)';
   } else if (traversalScore < 0.3) traversalDifficulty = 'Easy';
   else if (traversalScore < 0.5) traversalDifficulty = 'Moderate';
   else if (traversalScore < 0.7) traversalDifficulty = 'Difficult';

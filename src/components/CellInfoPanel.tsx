@@ -34,7 +34,8 @@ const STATE_COLORS: Record<string, string> = {
   suppressed: '#508cc8',
   firebreak: '#8c6432',
   village: '#b4905a',
-  water: '#4682b4',
+  river: '#6aadcf',
+  lake: '#4a8ab0',
 };
 
 const STATE_LABELS: Record<string, string> = {
@@ -44,7 +45,8 @@ const STATE_LABELS: Record<string, string> = {
   suppressed: 'Suppressed',
   firebreak: 'Firebreak',
   village: 'Village',
-  water: 'Water',
+  river: 'River',
+  lake: 'Lake',
 };
 
 const UNIT_LABELS: Record<string, string> = {
@@ -54,7 +56,7 @@ const UNIT_LABELS: Record<string, string> = {
 
 export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInfoPanelProps) {
   const hasSelection = terrain != null && row != null && col != null;
-  const cellState = cell?.state ?? (terrain?.waterType !== 'none' && terrain?.waterType ? 'water' : 'normal');
+  const cellState = cell?.state ?? (terrain?.waterType !== 'none' && terrain?.waterType ? terrain.waterType : 'normal');
 
   return (
     <div style={{

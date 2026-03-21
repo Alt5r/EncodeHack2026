@@ -1,5 +1,5 @@
 /** Cell states matching the backend grid model */
-export type CellState = 'normal' | 'fire' | 'burned' | 'suppressed' | 'firebreak' | 'village' | 'water';
+export type CellState = 'normal' | 'fire' | 'burned' | 'suppressed' | 'firebreak' | 'village' | 'river' | 'lake';
 
 /** A single cell in the 32×32 grid */
 export interface Cell {
@@ -53,7 +53,7 @@ export interface ScoreSummary {
 export interface SessionState {
   grid_size: number;   // always 32
   tick: number;
-  status: 'waiting' | 'running' | 'ended';
+  status: 'waiting' | 'running' | 'won' | 'lost' | 'ended';
   cells: Cell[];       // only non-normal cells (sparse)
   units: Unit[];
   villages: Village[];

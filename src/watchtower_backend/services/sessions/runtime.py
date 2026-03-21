@@ -257,7 +257,7 @@ def build_initial_state(
         else Doctrine(text=doctrine_text, title=doctrine_title)
     )
     session_id = uuid4().hex
-    village_top_left = (grid_size - 6, grid_size - 6)
+    village_top_left = (40, 38)
     units = [
         UnitState(
             id="tower",

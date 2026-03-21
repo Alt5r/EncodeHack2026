@@ -21,7 +21,11 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
       status = 'running';
       break;
     case 'won':
+      status = 'won';
+      break;
     case 'lost':
+      status = 'lost';
+      break;
     case 'terminated':
       status = 'ended';
       break;

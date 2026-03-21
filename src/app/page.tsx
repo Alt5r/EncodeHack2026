@@ -13,7 +13,7 @@ import { getCellTerrain } from '@/lib/cell-info';
 import { MOCK_STATE } from '@/lib/mock-data';
 import { useSessionWebSocket } from '@/lib/useSessionWebSocket';
 import { useRadioAudio } from '@/lib/useRadioAudio';
-import type { ScoreSummary } from '@/lib/types';
+import type { SessionState, ScoreSummary } from '@/lib/types';
 import type {
   BroadcastEnvelope,
   TranscriptMessage,
@@ -43,6 +43,9 @@ export default function Home() {
   const [terrainParams, setTerrainParams] = useState<TerrainParams>(
     () => ({ ...DEFAULT_PARAMS, seed: Date.now() }),
   );
+
+  // Live game state (updated from backend snapshots, drives the map)
+  const [gameState, setGameState] = useState<SessionState>(MOCK_STATE);
 
   // Score tracking for HUD (updated from snapshots)
   const [scoreTick, setScoreTick] = useState(0);
@@ -102,6 +105,7 @@ export default function Home() {
     async (doctrine: string) => {
       const sessionId = await createSession(doctrine);
       setTerrainParams({ ...DEFAULT_PARAMS, seed: Date.now() });
+      setGameState(MOCK_STATE);
       setRadioMessages([]);
       setScoreTick(0);
       setBurnedCells(0);
@@ -123,28 +127,29 @@ export default function Home() {
       (envelope: BroadcastEnvelope) => {
         // Handle snapshot envelopes (full state dumps)
         if (envelope.kind === 'snapshot' && envelope.snapshot) {
-          const snap = envelope.snapshot;
-          if (typeof snap.tick === 'number') setScoreTick(snap.tick);
-          if (Array.isArray(snap.burned_cells)) setBurnedCells(snap.burned_cells.length);
-          if (Array.isArray(snap.suppressed_cells)) setSuppressedCells(snap.suppressed_cells.length);
-          if (Array.isArray(snap.firebreak_cells)) setFirebreakCells(snap.firebreak_cells.length);
-          if (snap.score && typeof (snap.score as Record<string, unknown>).village_damage === 'number') {
-            setVillageDamage((snap.score as Record<string, unknown>).village_damage as number);
+          const adapted = envelope.snapshot as unknown as SessionState;
+          setGameState(adapted);
+
+          // Update HUD counters from the adapted cells array
+          setScoreTick(adapted.tick);
+          setBurnedCells(adapted.cells.filter(c => c.state === 'burned').length);
+          setSuppressedCells(adapted.cells.filter(c => c.state === 'suppressed').length);
+          setFirebreakCells(adapted.cells.filter(c => c.state === 'firebreak').length);
+          if (adapted.score) {
+            setVillageDamage(adapted.score.village_damage);
           }
 
           // Check for game completion
-          const status = snap.status as string | undefined;
-          if (status === 'won' || status === 'lost') {
-            const score: ScoreSummary = snap.score
-              ? (snap.score as ScoreSummary)
-              : {
-                  time_elapsed_seconds: (snap.tick as number) ?? 0,
-                  burned_cells: Array.isArray(snap.burned_cells) ? snap.burned_cells.length : 0,
-                  suppressed_cells: Array.isArray(snap.suppressed_cells) ? snap.suppressed_cells.length : 0,
-                  firebreak_cells: Array.isArray(snap.firebreak_cells) ? snap.firebreak_cells.length : 0,
-                  village_damage: 0,
-                };
-            setScreen({ kind: 'result', outcome: status, score });
+          if (adapted.status === 'won' || adapted.status === 'lost') {
+            const outcome: 'won' | 'lost' = adapted.status;
+            const score: ScoreSummary = adapted.score ?? {
+              time_elapsed_seconds: adapted.tick,
+              burned_cells: adapted.cells.filter(c => c.state === 'burned').length,
+              suppressed_cells: adapted.cells.filter(c => c.state === 'suppressed').length,
+              firebreak_cells: adapted.cells.filter(c => c.state === 'firebreak').length,
+              village_damage: 0,
+            };
+            setScreen({ kind: 'result', outcome, score });
             return;
           }
         }
@@ -214,16 +219,16 @@ export default function Home() {
     const { mapW, mapH } = getMapGeometry(w, h);
     return getCellTerrain(
       selectedCell.row, selectedCell.col,
-      MOCK_STATE.grid_size, heightmap,
+      gameState.grid_size, heightmap,
       mapW, mapH, terrainParams,
     );
-  }, [selectedCell, heightmap, terrainParams]);
+  }, [selectedCell, gameState.grid_size, heightmap, terrainParams]);
 
   const selectedGameCell = useMemo(() => {
     if (!selectedCell) return undefined;
-    const found = MOCK_STATE.cells.find(c => c.row === selectedCell.row && c.col === selectedCell.col);
+    const found = gameState.cells.find(c => c.row === selectedCell.row && c.col === selectedCell.col);
     if (found) return found;
-    for (const v of MOCK_STATE.villages) {
+    for (const v of gameState.villages) {
       if (
         selectedCell.row >= v.row && selectedCell.row < v.row + v.size &&
         selectedCell.col >= v.col && selectedCell.col < v.col + v.size
@@ -232,12 +237,12 @@ export default function Home() {
       }
     }
     return undefined;
-  }, [selectedCell]);
+  }, [selectedCell, gameState.cells, gameState.villages]);
 
   const selectedUnit = useMemo(() => {
     if (!selectedCell) return undefined;
-    return MOCK_STATE.units.find(u => u.row === selectedCell.row && u.col === selectedCell.col);
-  }, [selectedCell]);
+    return gameState.units.find(u => u.row === selectedCell.row && u.col === selectedCell.col);
+  }, [selectedCell, gameState.units]);
 
   const handleCellSelect = useCallback((cell: { row: number; col: number } | null) => {
     setSelectedCell(cell);
@@ -283,7 +288,7 @@ export default function Home() {
       <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
         <MapCanvas
           params={terrainParams}
-          gameState={MOCK_STATE}
+          gameState={gameState}
           showGrid={showGrid}
           selectedCell={selectedCell}
           onCellSelect={handleCellSelect}

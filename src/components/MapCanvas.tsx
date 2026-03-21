@@ -1,7 +1,8 @@
 'use client';
 
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useMemo } from 'react';
 import { generateHeightmap, extractContours, generateVegetationImage, generateWaterFeatures, drawMapDecorations, type TerrainParams } from '@/lib/terrain';
+import { getWaterMap, type WaterType } from '@/lib/cell-info';
 import type { SessionState, Cell, Unit, Village, Wind } from '@/lib/types';
 
 interface MapCanvasProps {
@@ -52,6 +53,13 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
   const dragStartRef = useRef({ x: 0, y: 0 });
   const panStartRef = useRef({ x: 0, y: 0 });
   const didDragRef = useRef(false);
+
+  // Water map for village placement (deterministic per seed + grid size)
+  const waterCells = useMemo(() => {
+    const heightmap = generateHeightmap(GRID_W, GRID_H, params);
+    const gridSize = gameState?.grid_size ?? 32;
+    return getWaterMap(heightmap, gridSize, params);
+  }, [params, gameState?.grid_size]);
 
   // ── Render terrain to offscreen canvas (expensive, cached) ──
   const renderTerrain = useCallback((w: number, h: number, dpr: number): HTMLCanvasElement => {
@@ -127,8 +135,8 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     ctx.rect(mapX, mapY, mapW, mapH);
     ctx.clip();
 
-    ctx.strokeStyle = '#8b7355';
-    ctx.lineWidth = 0.4;
+    ctx.strokeStyle = '#7a6245';
+    ctx.lineWidth = 0.7;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
@@ -143,8 +151,8 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
 
     // Index contours (every 5th)
     const indexInterval = params.contourInterval * 5;
-    ctx.strokeStyle = '#6b5a42';
-    ctx.lineWidth = 0.9;
+    ctx.strokeStyle = '#5a4832';
+    ctx.lineWidth = 1.4;
     for (const contour of contours) {
       const remainder = contour.level % indexInterval;
       if (remainder > 0.001 && remainder < indexInterval - 0.001) continue;
@@ -781,6 +789,7 @@ function drawVillage(
   village: Village,
   mapX: number, mapY: number,
   cellW: number, cellH: number,
+  waterMap?: Map<string, WaterType>,
 ) {
   const { row, col, size } = village;
   const houseCells = getVillageCells(size, row, col);
@@ -792,6 +801,8 @@ function drawVillage(
   for (let r = 0; r < size; r++) {
     for (let c = 0; c < size; c++) {
       if (!houseCells.has(`${r},${c}`)) continue;
+      // Skip houses on water cells
+      if (waterMap?.has(`${row + r},${col + c}`)) continue;
       const px = mapX + (col + c) * cellW;
       const py = mapY + (row + r) * cellH;
       drawHouseCell(ctx, px, py, cellW, cellH, r, c);
