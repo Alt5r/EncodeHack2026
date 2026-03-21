@@ -4,7 +4,7 @@ import type { SessionState, Cell, Unit, RawSessionState } from './types';
  * Converts a raw backend session snapshot into the frontend SessionState shape.
  *
  * Key mappings:
- * - Status:      pending → waiting, won|lost|terminated → ended
+ * - Status:      pending → waiting, terminated → ended
  * - Coordinates: backend [x, y] → frontend { row: y, col: x }
  * - Village:     singular with top_left → villages array with { row, col, size }
  * - Cells:       separate arrays merged into one Cell[] with default fuel/moisture
@@ -21,7 +21,11 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
       status = 'running';
       break;
     case 'won':
+      status = 'won';
+      break;
     case 'lost':
+      status = 'lost';
+      break;
     case 'terminated':
       status = 'ended';
       break;

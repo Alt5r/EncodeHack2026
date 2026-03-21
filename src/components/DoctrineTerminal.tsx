@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { drawPaperGrain } from '@/lib/parchment';
+import { useState, useEffect, useRef, useCallback, useId } from 'react';
+import WatchtowerScene from '@/components/WatchtowerScene';
 
 const INITIAL_LINES = [
   'WATCHTOWER COMMAND SYSTEM v1.0',
@@ -51,24 +51,7 @@ export default function DoctrineTerminal({ onDeploy, onBack }: DoctrineTerminalP
   const [deployIndex, setDeployIndex] = useState(0);
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  // Draw parchment background
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const canvas = canvasRef.current;
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    drawPaperGrain(canvas);
-
-    const onResize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-      drawPaperGrain(canvas);
-    };
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+  const sessionCode = useId().replace(/:/g, '').slice(-6).toUpperCase();
 
   // Blinking cursor
   useEffect(() => {
@@ -136,210 +119,119 @@ export default function DoctrineTerminal({ onDeploy, onBack }: DoctrineTerminalP
     setCurrentInput(e.target.value.replace(/\n/g, ''));
   };
 
-  const getLineColor = (line: string): string => {
-    if (line.startsWith('DEPLOYING')) return '#a02818';
+  const getLineClassName = (line: string): string => {
     if (
       line.startsWith('Initializing') ||
       line.startsWith('Fetching') ||
       line.startsWith('Spawning') ||
       line.startsWith('Injecting') ||
-      line.startsWith('Fire ignition')
+      line.startsWith('Fire ignition') ||
+      line.startsWith('DEPLOYING')
     ) {
-      return '#3a2a1a';
+      return 'whitespace-pre-wrap leading-relaxed text-green-500';
     }
-    if (line.startsWith('>')) return '#1a1a1a';
-    if (line.startsWith('WATCHTOWER')) return '#1a1a1a';
-    if (line.startsWith('===')) return '#5a4530';
-    return '#2a1e14';
-  };
-
-  const getLineFontWeight = (line: string): number => {
-    if (line.startsWith('>') || line.startsWith('WATCHTOWER')) return 700;
-    return 400;
-  };
-
-  const getLineFontSize = (line: string): number => {
-    if (line.startsWith('WATCHTOWER')) return 18;
-    return 14;
+    if (line.startsWith('WATCHTOWER')) {
+      return 'whitespace-pre-wrap text-lg leading-relaxed text-amber-300';
+    }
+    if (line.startsWith('===')) {
+      return 'whitespace-pre-wrap leading-relaxed text-amber-600';
+    }
+    if (line.startsWith('>')) {
+      return 'whitespace-pre-wrap font-bold leading-relaxed text-amber-400';
+    }
+    return 'whitespace-pre-wrap leading-relaxed text-amber-500';
   };
 
   return (
     <div
-      style={{
-        position: 'relative',
-        minHeight: '100vh',
-        fontFamily: '"Courier New", Courier, monospace',
-        cursor: 'text',
-        overflow: 'hidden',
-      }}
+      className="relative min-h-screen cursor-text overflow-hidden bg-black font-mono"
       onClick={() => inputRef.current?.focus()}
     >
-      {/* Parchment canvas background */}
-      <canvas
-        ref={canvasRef}
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
-      />
-
-      {/* Faint ruled lines */}
+      <div className="absolute inset-0 z-0 scale-105 opacity-40 blur-md">
+        <WatchtowerScene hideUI />
+      </div>
+      <div className="absolute inset-0 z-10 bg-black/75" />
       <div
+        className="pointer-events-none fixed inset-0 z-50"
         style={{
-          pointerEvents: 'none',
-          position: 'fixed',
-          inset: 0,
-          zIndex: 1,
           background:
-            'repeating-linear-gradient(0deg, transparent 0px, transparent 21px, rgba(139, 115, 85, 0.1) 21px, rgba(139, 115, 85, 0.1) 22px)',
+            'repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.1) 0px, rgba(0, 0, 0, 0.1) 1px, transparent 1px, transparent 2px)',
         }}
       />
-
-      {/* Map border — 40px inset */}
       <div
-        style={{
-          position: 'absolute',
-          top: 40,
-          left: 40,
-          right: 40,
-          bottom: 40,
-          border: '3px solid #1a1a1a',
-          pointerEvents: 'none',
-          zIndex: 2,
-        }}
+        className="pointer-events-none fixed inset-0 z-40"
+        style={{ boxShadow: 'inset 0 0 150px rgba(255, 176, 50, 0.03)' }}
       />
 
-      {/* Terminal container — inside the map border */}
-      <div style={{ position: 'relative', zIndex: 20, padding: '56px 60px' }}>
+      <div className="relative z-20 p-4 md:p-8">
         <div
           ref={terminalRef}
+          className="mx-auto h-[calc(100vh-4rem)] max-w-4xl overflow-y-auto"
           style={{
-            maxWidth: 896,
-            margin: '0 auto',
-            height: 'calc(100vh - 112px)',
-            overflowY: 'auto',
             scrollbarWidth: 'none',
+            textShadow: '0 0 8px rgba(255, 176, 50, 0.5)',
           }}
         >
-          {/* Header */}
-          <div
-            style={{
-              marginBottom: 24,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              color: '#3a2a1a',
-              fontSize: 12,
-              fontFamily: 'Georgia, serif',
-              letterSpacing: '0.1em',
-            }}
-          >
-            <span
-              style={{
-                display: 'inline-block',
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                backgroundColor: '#3a2a1a',
-                animation: 'wtTermPulse 2s ease-in-out infinite',
-              }}
-            />
-            <span>FIELD ORDERS</span>
+          <div className="mb-6 flex items-center gap-2 text-xs text-amber-500/60">
+            <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500/60" />
+            <span>SECURE TERMINAL</span>
+            <span className="ml-auto">SESSION: {sessionCode}</span>
           </div>
 
-          {/* Lines */}
           {lines.map((line, i) => (
-            <div
-              key={i}
-              style={{
-                color: getLineColor(line),
-                fontWeight: getLineFontWeight(line),
-                fontSize: getLineFontSize(line),
-                lineHeight: 1.6,
-                whiteSpace: 'pre-wrap',
-                minHeight: '1.6em',
-              }}
-            >
+            <div key={i} className={getLineClassName(line)}>
               {line}
             </div>
           ))}
 
-          {/* Current input line with cursor */}
           {!isDeploying && (
-            <div style={{ display: 'flex', color: '#2a1e14', marginTop: 0 }}>
-              <span style={{ whiteSpace: 'pre-wrap' }}>{currentInput}</span>
+            <div className="mt-0 flex text-amber-500">
+              <span className="whitespace-pre-wrap">{currentInput}</span>
               <span
-                style={{
-                  display: 'inline-block',
-                  width: 8,
-                  height: 18,
-                  backgroundColor: '#1a1a1a',
-                  marginLeft: 2,
-                  opacity: cursorVisible ? 1 : 0,
-                }}
+                className={`ml-0.5 inline-block h-5 w-2 bg-amber-500 ${
+                  cursorVisible ? 'opacity-100' : 'opacity-0'
+                }`}
               />
             </div>
           )}
 
-          {/* Hidden textarea */}
           <textarea
             ref={inputRef}
             value={currentInput}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
+            className="pointer-events-none absolute opacity-0"
             autoFocus
             disabled={isDeploying}
           />
 
-          <div style={{ height: 80 }} />
+          <div className="h-20" />
         </div>
       </div>
 
-      {/* Status indicator */}
       <div
-        style={{
-          position: 'fixed',
-          bottom: 16,
-          right: 16,
-          fontSize: 14,
-          zIndex: 30,
-          fontFamily: '"Courier New", Courier, monospace',
-          color: isDeploying ? '#a02818' : '#5a4530',
-          animation: isDeploying ? 'wtTermPulse 1s ease-in-out infinite' : undefined,
-        }}
+        className="fixed bottom-4 right-4 z-30 text-sm text-amber-500/40"
       >
-        {isDeploying
-          ? 'DEPLOYING AGENT...'
-          : doctrineLines.length > 0
-            ? `${doctrineLines.length} lines | ENTER to add, ENTER twice to deploy`
-            : 'Awaiting doctrine input...'}
+        {isDeploying ? (
+          <span className="animate-pulse text-green-500">DEPLOYING AGENT...</span>
+        ) : doctrineLines.length > 0 ? (
+          <span>{doctrineLines.length} lines | ENTER to add, ENTER twice to deploy</span>
+        ) : (
+          <span>Awaiting doctrine input...</span>
+        )}
       </div>
 
-      {/* Back button */}
       <button
         onClick={onBack}
-        style={{
-          position: 'fixed',
-          bottom: 16,
-          left: 16,
-          fontSize: 14,
-          zIndex: 30,
-          color: '#5a4530',
-          backgroundColor: 'transparent',
-          border: 'none',
-          cursor: 'pointer',
-          fontFamily: 'Georgia, serif',
-          transition: 'color 0.3s',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.color = '#1a1a1a';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.color = '#5a4530';
-        }}
+        className="fixed bottom-4 left-4 z-30 text-sm text-amber-500/40 transition-colors hover:text-amber-500/80"
       >
         {'<'} ABORT
       </button>
 
       <style>{`
+        ::-webkit-scrollbar {
+          display: none;
+        }
         @keyframes wtTermPulse {
           0%, 100% { opacity: 0.6; }
           50% { opacity: 1; }

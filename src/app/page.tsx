@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import MapCanvas, { getMapGeometry } from '@/components/MapCanvas';
 import CellInfoPanel from '@/components/CellInfoPanel';
 import RadioTranscript from '@/components/RadioTranscript';
@@ -8,12 +8,14 @@ import MenuScreen from '@/components/MenuScreen';
 import DoctrineTerminal from '@/components/DoctrineTerminal';
 import ScoreHUD from '@/components/ScoreHUD';
 import ResultScreen from '@/components/ResultScreen';
+import { GAME_PALETTE } from '@/lib/game-palette';
 import { generateHeightmap, DEFAULT_PARAMS, type TerrainParams } from '@/lib/terrain';
-import { getCellTerrain } from '@/lib/cell-info';
+import { buildSessionTerrainGrid, getCellTerrain } from '@/lib/cell-info';
 import { MOCK_STATE } from '@/lib/mock-data';
+import { advanceMockSessionState } from '@/lib/mock-fire-simulation';
 import { useSessionWebSocket } from '@/lib/useSessionWebSocket';
 import { useRadioAudio } from '@/lib/useRadioAudio';
-import type { ScoreSummary } from '@/lib/types';
+import type { ScoreSummary, SessionState } from '@/lib/types';
 import type {
   BroadcastEnvelope,
   TranscriptMessage,
@@ -43,6 +45,7 @@ export default function Home() {
   const [terrainParams, setTerrainParams] = useState<TerrainParams>(
     () => ({ ...DEFAULT_PARAMS, seed: Date.now() }),
   );
+  const [gameState, setGameState] = useState<SessionState>(MOCK_STATE);
 
   // Score tracking for HUD (updated from snapshots)
   const [scoreTick, setScoreTick] = useState(0);
@@ -58,9 +61,19 @@ export default function Home() {
   // Ref for screen so WebSocket callback can read latest without re-binding
   const screenRef = useRef(screen);
   screenRef.current = screen;
+  const gameStateRef = useRef(gameState);
+  gameStateRef.current = gameState;
 
   // Generate heightmap (deterministic per seed — same params → same result as MapCanvas)
   const heightmap = useMemo(() => generateHeightmap(210, 210, terrainParams), [terrainParams]);
+  const isMockSession = screen.kind === 'game' && screen.sessionId === 'mock-session';
+  const mockTerrainGrid = useMemo(() => {
+    if (!isMockSession) return null;
+    const w = typeof window !== 'undefined' ? window.innerWidth : 1400;
+    const h = typeof window !== 'undefined' ? window.innerHeight : 900;
+    const { mapW, mapH } = getMapGeometry(w, h);
+    return buildSessionTerrainGrid(gameState.grid_size, heightmap, mapW, mapH, terrainParams);
+  }, [isMockSession, gameState.grid_size, heightmap, terrainParams]);
 
   // Audio engine
   const {
@@ -82,12 +95,26 @@ export default function Home() {
 
   // ── Session creation ────────────────────────────────────────
 
-  const createSession = useCallback(async (doctrine: string): Promise<string> => {
+  const createSession = useCallback(async (doctrine: string, nextTerrainParams: TerrainParams): Promise<string> => {
     try {
+      const w = typeof window !== 'undefined' ? window.innerWidth : 1400;
+      const h = typeof window !== 'undefined' ? window.innerHeight : 900;
+      const { mapW, mapH } = getMapGeometry(w, h);
+      const nextHeightmap = generateHeightmap(210, 210, nextTerrainParams);
+      const terrainGrid = buildSessionTerrainGrid(
+        MOCK_STATE.grid_size,
+        nextHeightmap,
+        mapW,
+        mapH,
+        nextTerrainParams,
+      );
       const res = await fetch('/api/v1/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doctrine_text: doctrine }),
+        body: JSON.stringify({
+          doctrine_text: doctrine,
+          terrain_grid: terrainGrid,
+        }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -100,14 +127,16 @@ export default function Home() {
 
   const startGame = useCallback(
     async (doctrine: string) => {
-      const sessionId = await createSession(doctrine);
-      setTerrainParams({ ...DEFAULT_PARAMS, seed: Date.now() });
+      const nextTerrainParams = { ...DEFAULT_PARAMS, seed: Date.now() };
+      setTerrainParams(nextTerrainParams);
+      const sessionId = await createSession(doctrine, nextTerrainParams);
+      setGameState(MOCK_STATE);
       setRadioMessages([]);
-      setScoreTick(0);
-      setBurnedCells(0);
-      setSuppressedCells(0);
-      setFirebreakCells(0);
-      setVillageDamage(0);
+      setScoreTick(sessionId === 'mock-session' ? MOCK_STATE.tick : 0);
+      setBurnedCells(sessionId === 'mock-session' ? MOCK_STATE.score.burned_cells : 0);
+      setSuppressedCells(sessionId === 'mock-session' ? MOCK_STATE.score.suppressed_cells : 0);
+      setFirebreakCells(sessionId === 'mock-session' ? MOCK_STATE.score.firebreak_cells : 0);
+      setVillageDamage(sessionId === 'mock-session' ? MOCK_STATE.score.village_damage : 0);
       setSelectedCell(null);
       setScreen({ kind: 'game', sessionId });
     },
@@ -116,35 +145,33 @@ export default function Home() {
 
   // ── WebSocket event routing ─────────────────────────────────
 
-  const activeSessionId = screen.kind === 'game' ? screen.sessionId : null;
+  const activeSessionId = screen.kind === 'game' && screen.sessionId !== 'mock-session'
+    ? screen.sessionId
+    : null;
 
   useSessionWebSocket(activeSessionId, {
     onMessage: useCallback(
       (envelope: BroadcastEnvelope) => {
         // Handle snapshot envelopes (full state dumps)
         if (envelope.kind === 'snapshot' && envelope.snapshot) {
-          const snap = envelope.snapshot;
-          if (typeof snap.tick === 'number') setScoreTick(snap.tick);
-          if (Array.isArray(snap.burned_cells)) setBurnedCells(snap.burned_cells.length);
-          if (Array.isArray(snap.suppressed_cells)) setSuppressedCells(snap.suppressed_cells.length);
-          if (Array.isArray(snap.firebreak_cells)) setFirebreakCells(snap.firebreak_cells.length);
-          if (snap.score && typeof (snap.score as Record<string, unknown>).village_damage === 'number') {
-            setVillageDamage((snap.score as Record<string, unknown>).village_damage as number);
-          }
+          const snap = envelope.snapshot as unknown as SessionState;
+          setGameState(snap);
+          setScoreTick(snap.tick);
+          setBurnedCells(snap.cells.filter((cell) => cell.state === 'burned').length);
+          setSuppressedCells(snap.cells.filter((cell) => cell.state === 'suppressed').length);
+          setFirebreakCells(snap.cells.filter((cell) => cell.state === 'firebreak').length);
+          if (snap.score) setVillageDamage(snap.score.village_damage);
 
           // Check for game completion
-          const status = snap.status as string | undefined;
-          if (status === 'won' || status === 'lost') {
-            const score: ScoreSummary = snap.score
-              ? (snap.score as ScoreSummary)
-              : {
-                  time_elapsed_seconds: (snap.tick as number) ?? 0,
-                  burned_cells: Array.isArray(snap.burned_cells) ? snap.burned_cells.length : 0,
-                  suppressed_cells: Array.isArray(snap.suppressed_cells) ? snap.suppressed_cells.length : 0,
-                  firebreak_cells: Array.isArray(snap.firebreak_cells) ? snap.firebreak_cells.length : 0,
-                  village_damage: 0,
-                };
-            setScreen({ kind: 'result', outcome: status, score });
+          if (snap.status === 'won' || snap.status === 'lost') {
+            const score: ScoreSummary = snap.score ?? {
+              time_elapsed_seconds: snap.tick,
+              burned_cells: snap.cells.filter((cell) => cell.state === 'burned').length,
+              suppressed_cells: snap.cells.filter((cell) => cell.state === 'suppressed').length,
+              firebreak_cells: snap.cells.filter((cell) => cell.state === 'firebreak').length,
+              village_damage: 0,
+            };
+            setScreen({ kind: 'result', outcome: snap.status, score });
             return;
           }
         }
@@ -155,8 +182,9 @@ export default function Home() {
 
         // session.completed → result screen
         if (type === 'session.completed') {
-          const p = payload as { outcome?: string; score?: ScoreSummary };
-          const outcome = (p.outcome === 'won' || p.outcome === 'lost') ? p.outcome : 'lost';
+          const p = payload as { outcome?: string; status?: string; score?: ScoreSummary };
+          const outcomeValue = p.outcome ?? p.status;
+          const outcome = (outcomeValue === 'won' || outcomeValue === 'lost') ? outcomeValue : 'lost';
           const score: ScoreSummary = p.score ?? {
             time_elapsed_seconds: 0,
             burned_cells: 0,
@@ -205,6 +233,28 @@ export default function Home() {
     ),
   });
 
+  useEffect(() => {
+    if (!isMockSession || !mockTerrainGrid) return;
+
+    const intervalId = window.setInterval(() => {
+      const next = advanceMockSessionState(gameStateRef.current, mockTerrainGrid, terrainParams.seed);
+      gameStateRef.current = next;
+      setGameState(next);
+      setScoreTick(next.tick);
+      setBurnedCells(next.score.burned_cells);
+      setSuppressedCells(next.score.suppressed_cells);
+      setFirebreakCells(next.score.firebreak_cells);
+      setVillageDamage(next.score.village_damage);
+
+      if (next.status === 'won' || next.status === 'lost') {
+        window.clearInterval(intervalId);
+        setScreen({ kind: 'result', outcome: next.status, score: next.score });
+      }
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isMockSession, mockTerrainGrid, terrainParams.seed]);
+
   // ── Terrain / cell lookups (game screen only) ───────────────
 
   const cellInfo = useMemo(() => {
@@ -214,16 +264,16 @@ export default function Home() {
     const { mapW, mapH } = getMapGeometry(w, h);
     return getCellTerrain(
       selectedCell.row, selectedCell.col,
-      MOCK_STATE.grid_size, heightmap,
+      gameState.grid_size, heightmap,
       mapW, mapH, terrainParams,
     );
-  }, [selectedCell, heightmap, terrainParams]);
+  }, [selectedCell, gameState.grid_size, heightmap, terrainParams]);
 
   const selectedGameCell = useMemo(() => {
     if (!selectedCell) return undefined;
-    const found = MOCK_STATE.cells.find(c => c.row === selectedCell.row && c.col === selectedCell.col);
+    const found = gameState.cells.find(c => c.row === selectedCell.row && c.col === selectedCell.col);
     if (found) return found;
-    for (const v of MOCK_STATE.villages) {
+    for (const v of gameState.villages) {
       if (
         selectedCell.row >= v.row && selectedCell.row < v.row + v.size &&
         selectedCell.col >= v.col && selectedCell.col < v.col + v.size
@@ -232,12 +282,12 @@ export default function Home() {
       }
     }
     return undefined;
-  }, [selectedCell]);
+  }, [selectedCell, gameState.cells, gameState.villages]);
 
   const selectedUnit = useMemo(() => {
     if (!selectedCell) return undefined;
-    return MOCK_STATE.units.find(u => u.row === selectedCell.row && u.col === selectedCell.col);
-  }, [selectedCell]);
+    return gameState.units.find(u => u.row === selectedCell.row && u.col === selectedCell.col);
+  }, [selectedCell, gameState.units]);
 
   const handleCellSelect = useCallback((cell: { row: number; col: number } | null) => {
     setSelectedCell(cell);
@@ -276,14 +326,28 @@ export default function Home() {
   // screen.kind === 'game'
   return (
     <div
-      style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden' }}
+      style={{
+        display: 'flex',
+        width: '100vw',
+        height: '100vh',
+        overflow: 'hidden',
+        background: GAME_PALETTE.pageGradient,
+        color: GAME_PALETTE.textPrimary,
+      }}
       onClick={initAudio}
     >
       {/* Map area */}
-      <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+      <div
+        style={{
+          flex: 1,
+          position: 'relative',
+          minWidth: 0,
+          background: GAME_PALETTE.pageBase,
+        }}
+      >
         <MapCanvas
           params={terrainParams}
-          gameState={MOCK_STATE}
+          gameState={gameState}
           showGrid={showGrid}
           selectedCell={selectedCell}
           onCellSelect={handleCellSelect}
@@ -295,12 +359,15 @@ export default function Home() {
             top: 12,
             left: 12,
             padding: '6px 12px',
-            background: showGrid ? 'rgba(30, 30, 30, 0.85)' : 'rgba(255, 255, 240, 0.75)',
-            color: showGrid ? '#fff' : '#1a1a1a',
-            border: '1px solid #1a1a1a',
+            background: showGrid ? 'rgba(0, 0, 0, 0.5)' : 'rgba(26, 21, 32, 0.72)',
+            color: showGrid ? GAME_PALETTE.accentStrong : GAME_PALETTE.textPrimary,
+            border: `1px solid ${GAME_PALETTE.panelOutline}`,
             borderRadius: 4,
             fontSize: 12,
-            fontFamily: 'Georgia, serif',
+            fontFamily: '"Courier New", Courier, monospace',
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            backdropFilter: 'blur(10px)',
             cursor: 'pointer',
             zIndex: 10,
           }}
@@ -315,7 +382,10 @@ export default function Home() {
         width: '30vw',
         display: 'flex',
         flexDirection: 'column',
-        boxShadow: '-4px 0 20px rgba(0,0,0,0.15)',
+        background: GAME_PALETTE.panelBg,
+        borderLeft: `1px solid ${GAME_PALETTE.panelDivider}`,
+        boxShadow: '-24px 0 40px rgba(0, 0, 0, 0.35)',
+        backdropFilter: 'blur(16px)',
       }}>
         <ScoreHUD
           tick={scoreTick}

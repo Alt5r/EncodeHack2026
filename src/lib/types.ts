@@ -53,7 +53,7 @@ export interface ScoreSummary {
 export interface SessionState {
   grid_size: number;   // always 32
   tick: number;
-  status: 'waiting' | 'running' | 'ended';
+  status: 'waiting' | 'running' | 'won' | 'lost' | 'ended';
   cells: Cell[];       // only non-normal cells (sparse)
   units: Unit[];
   villages: Village[];

@@ -1,5 +1,7 @@
 'use client';
 
+import { GAME_PALETTE } from '@/lib/game-palette';
+
 interface ScoreHUDProps {
   tick: number;
   burnedCells: number;
@@ -11,8 +13,6 @@ interface ScoreHUDProps {
 export default function ScoreHUD({
   tick,
   burnedCells,
-  suppressedCells,
-  firebreakCells,
   villageDamage,
 }: ScoreHUDProps) {
   const formatTime = (t: number): string => {
@@ -22,24 +22,24 @@ export default function ScoreHUD({
   };
 
   const rows: Array<{ label: string; value: string; color: string }> = [
-    { label: 'TIME', value: formatTime(tick), color: '#4a3728' },
-    { label: 'BURNED', value: String(burnedCells), color: burnedCells > 0 ? '#c03020' : '#4a3728' },
+    { label: 'TIME', value: formatTime(tick), color: GAME_PALETTE.accentStrong },
+    { label: 'BURNED', value: String(burnedCells), color: burnedCells > 0 ? GAME_PALETTE.danger : GAME_PALETTE.textPrimary },
     {
       label: 'VILLAGE',
       value: villageDamage > 0 ? `DMG ${villageDamage}` : 'INTACT',
-      color: villageDamage > 0 ? '#c03020' : '#5a8a4a',
+      color: villageDamage > 0 ? GAME_PALETTE.danger : GAME_PALETTE.success,
     },
   ];
 
   return (
     <div
       style={{
-        background: 'rgba(212, 197, 160, 0.95)',
-        borderBottom: '1px solid rgba(0,0,0,0.15)',
+        background: GAME_PALETTE.panelBg,
+        borderBottom: `1px solid ${GAME_PALETTE.panelDivider}`,
         padding: '14px 18px',
         fontFamily: 'Georgia, serif',
         fontSize: 12,
-        color: '#1a1a1a',
+        color: GAME_PALETTE.textPrimary,
         flexShrink: 0,
       }}
     >
@@ -49,8 +49,8 @@ export default function ScoreHUD({
           fontSize: 9,
           fontWeight: 'bold',
           letterSpacing: 1.5,
-          color: '#6b5a42',
-          borderBottom: '1px solid rgba(0,0,0,0.15)',
+          color: GAME_PALETTE.accent,
+          borderBottom: `1px solid ${GAME_PALETTE.panelDivider}`,
           paddingBottom: 3,
           marginBottom: 8,
         }}
@@ -68,7 +68,7 @@ export default function ScoreHUD({
             marginBottom: 3,
           }}
         >
-          <span style={{ color: '#5a4a38', flexShrink: 0 }}>
+          <span style={{ color: GAME_PALETTE.textSecondary, flexShrink: 0 }}>
             {row.label}
           </span>
           <span style={{ color: row.color, fontWeight: 600 }}>{row.value}</span>

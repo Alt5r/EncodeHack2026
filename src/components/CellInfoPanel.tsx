@@ -1,5 +1,6 @@
 'use client';
 
+import { GAME_PALETTE } from '@/lib/game-palette';
 import type { CellTerrain } from '@/lib/cell-info';
 import type { Cell, Unit } from '@/lib/types';
 
@@ -16,7 +17,7 @@ function Bar({ value, color }: { value: number; color: string }) {
   return (
     <div style={{
       width: '100%', height: 8, borderRadius: 3,
-      background: 'rgba(0,0,0,0.12)', overflow: 'hidden',
+      background: 'rgba(255, 241, 214, 0.08)', overflow: 'hidden',
     }}>
       <div style={{
         width: `${Math.round(value * 100)}%`, height: '100%',
@@ -28,13 +29,13 @@ function Bar({ value, color }: { value: number; color: string }) {
 
 // ── Cell state display colours ──
 const STATE_COLORS: Record<string, string> = {
-  normal: '#6b8f4a',
-  fire: '#dc3c14',
-  burned: '#28191a',
-  suppressed: '#508cc8',
-  firebreak: '#8c6432',
-  village: '#b4905a',
-  water: '#4682b4',
+  normal: GAME_PALETTE.forestHigh,
+  fire: GAME_PALETTE.fire,
+  burned: GAME_PALETTE.burned,
+  suppressed: GAME_PALETTE.waterHighlight,
+  firebreak: GAME_PALETTE.firebreak,
+  village: GAME_PALETTE.village,
+  water: GAME_PALETTE.water,
 };
 
 const STATE_LABELS: Record<string, string> = {
@@ -61,17 +62,17 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
       height: '45vh',
       boxSizing: 'border-box',
       overflowY: 'auto',
-      background: 'rgba(212, 197, 160, 0.95)',
-      border: '2px solid rgba(120, 90, 60, 0.4)',
+      background: GAME_PALETTE.panelBg,
+      border: `1px solid ${GAME_PALETTE.panelOutline}`,
       padding: '14px 18px',
       fontFamily: 'Georgia, serif',
       fontSize: 12,
-      color: '#1a1a1a',
+      color: GAME_PALETTE.textPrimary,
       flexShrink: 0,
     }}>
       {/* Header */}
       <div style={{
-        fontSize: 12, fontWeight: 700, color: '#4a3728',
+        fontSize: 12, fontWeight: 700, color: GAME_PALETTE.accent,
         letterSpacing: '0.15em', marginBottom: 10,
       }}>
         CELL INFO
@@ -79,7 +80,7 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
 
       {!hasSelection ? (
         <div style={{
-          color: '#9a8a6a', fontSize: 12, fontStyle: 'italic',
+          color: GAME_PALETTE.textMuted, fontSize: 12, fontStyle: 'italic',
           padding: '12px 0',
         }}>
           No cell selected
@@ -116,7 +117,7 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
                 style={{
                   display: 'inline-block', width: 10, height: 10,
                   borderRadius: 2, background: terrain.vegetationColor,
-                  border: '1px solid rgba(0,0,0,0.2)',
+                  border: `1px solid ${GAME_PALETTE.panelDivider}`,
                 }}
               />
               {terrain.vegetationType}
@@ -129,11 +130,11 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
                 <span
                   style={{
                     display: 'inline-block', width: 10, height: 10,
-                    borderRadius: 2, background: terrain.waterType === 'lake' ? '#4a8ab0' : '#6aadcf',
-                    border: '1px solid rgba(0,0,0,0.2)',
+                    borderRadius: 2, background: GAME_PALETTE.water,
+                    border: `1px solid ${GAME_PALETTE.panelDivider}`,
                   }}
                 />
-                {terrain.waterType === 'lake' ? 'Lake' : 'River'}
+                Water
               </span>
             </Row>
           )}
@@ -143,7 +144,7 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
             <>
               <SectionLabel>FIRE RESISTANCE</SectionLabel>
               <Row label="Water barrier">
-                <Bar value={terrain.fireResistance} color="#508cc8" />
+                <Bar value={terrain.fireResistance} color={GAME_PALETTE.waterHighlight} />
               </Row>
             </>
           )}
@@ -153,9 +154,9 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
 
           <Row label={terrain.traversalDifficulty}>
             <Bar value={terrain.traversalScore} color={
-              terrain.traversalScore < 0.3 ? '#6b8f4a' :
-              terrain.traversalScore < 0.5 ? '#b8a040' :
-              terrain.traversalScore < 0.7 ? '#c07830' : '#a03020'
+              terrain.traversalScore < 0.3 ? GAME_PALETTE.success :
+              terrain.traversalScore < 0.5 ? GAME_PALETTE.accent :
+              terrain.traversalScore < 0.7 ? GAME_PALETTE.groundHighlight : GAME_PALETTE.danger
             } />
           </Row>
 
@@ -175,11 +176,11 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
           </Row>
 
           <Row label="Fuel">
-            <Bar value={cell?.fuel ?? (terrain.waterType !== 'none' ? 0.0 : 1.0)} color="#8b6432" />
+            <Bar value={cell?.fuel ?? (terrain.waterType !== 'none' ? 0.0 : 1.0)} color={GAME_PALETTE.groundHighlight} />
           </Row>
 
           <Row label="Moisture">
-            <Bar value={cell?.moisture ?? (terrain.waterType !== 'none' ? 1.0 : 0.5)} color="#508cc8" />
+            <Bar value={cell?.moisture ?? (terrain.waterType !== 'none' ? 1.0 : 0.5)} color={GAME_PALETTE.waterHighlight} />
           </Row>
 
           {/* ── Unit (if present) ── */}
@@ -203,7 +204,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
       fontSize: 9, fontWeight: 'bold', letterSpacing: 1.5,
-      color: '#6b5a42', borderBottom: '1px solid rgba(0,0,0,0.15)',
+      color: GAME_PALETTE.accent, borderBottom: `1px solid ${GAME_PALETTE.panelDivider}`,
       paddingBottom: 3, marginTop: 10, marginBottom: 6,
     }}>
       {children}
@@ -214,7 +215,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 5, gap: 8 }}>
-      <span style={{ color: '#5a4a38', flexShrink: 0 }}>{label}</span>
+      <span style={{ color: GAME_PALETTE.textSecondary, flexShrink: 0 }}>{label}</span>
       <div style={{ flex: 1, textAlign: 'right' }}>{children}</div>
     </div>
   );

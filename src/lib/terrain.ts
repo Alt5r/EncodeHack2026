@@ -1,4 +1,5 @@
 import { createNoise2D } from 'simplex-noise';
+import { GAME_PALETTE } from '@/lib/game-palette';
 
 // --- Heightmap generation ---
 
@@ -213,11 +214,11 @@ export function generateVegetationImage(
   const imageData = new ImageData(vegW, vegH);
   const buf32 = new Uint32Array(imageData.data.buffer);
 
-  // Colour palette (Firewatch-inspired, saturated)
-  const PARCHMENT = { r: 235, g: 222, b: 182 }; // #ebdeb6 — warm golden cream
-  const MEADOW    = { r: 158, g: 182, b: 108 }; // #9eb66c — bright sage green
-  const WOODLAND  = { r: 112, g: 152, b:  76 }; // #70984c — rich mid green
-  const FOREST    = { r:  68, g: 112, b:  52 }; // #447034 — deep vibrant green
+  // Dusk forest palette borrowed from the backup map page.
+  const CLEARING  = { r:  20, g:  40, b: 32 }; // #142820
+  const MEADOW    = { r:  24, g:  48, b: 40 }; // #183028
+  const WOODLAND  = { r:  30, g:  64, b: 56 }; // #1e4038
+  const FOREST    = { r:  53, g:  68, b: 63 }; // #35443f
 
   const vegFreq = 0.003;   // base frequency for vegetation noise (lower = larger blobs)
   const warpFreq = 0.0015; // frequency for domain warping
@@ -275,7 +276,7 @@ export function generateVegetationImage(
         );
       } else {
         [r, g, b] = lerpColor(
-          PARCHMENT.r, PARCHMENT.g, PARCHMENT.b,
+          CLEARING.r, CLEARING.g, CLEARING.b,
           MEADOW.r, MEADOW.g, MEADOW.b,
           tMeadow
         );
@@ -543,8 +544,9 @@ export function generateWaterFeatures(
   heightmap: Float32Array,
   gridW: number,
   gridH: number,
-  params: TerrainParams,
+  _params?: TerrainParams,
 ): { rivers: RiverPath[]; lakes: LakeRegion[] } {
+  void _params;
   const margin = 10;
 
   // ── Rivers ──
@@ -721,7 +723,7 @@ export function drawMapDecorations(
 
   // ── 1. Trees (forest + woodland zones) ──
   const treeSpacing = 12;
-  ctx.fillStyle = 'rgba(45, 80, 32, 0.55)';
+  ctx.fillStyle = 'rgba(42, 101, 96, 0.5)';
   for (let py = 0; py < mapH; py += treeSpacing) {
     for (let px = 0; px < mapW; px += treeSpacing) {
       const jx = px + (rng() - 0.5) * treeSpacing * 0.8;
@@ -749,7 +751,7 @@ export function drawMapDecorations(
 
   // ── 2. Rocks (high elevation ridges) ──
   const rockSpacing = 20;
-  ctx.fillStyle = 'rgba(120, 100, 80, 0.4)';
+  ctx.fillStyle = 'rgba(90, 79, 95, 0.42)';
   for (let py = 0; py < mapH; py += rockSpacing) {
     for (let px = 0; px < mapW; px += rockSpacing) {
       const jx = px + (rng() - 0.5) * rockSpacing * 0.7;
@@ -781,7 +783,7 @@ export function drawMapDecorations(
 
   // ── 3. Grass tufts (meadow band) ──
   const grassSpacing = 18;
-  ctx.strokeStyle = 'rgba(115, 148, 72, 0.4)';
+  ctx.strokeStyle = 'rgba(232, 168, 107, 0.26)';
   ctx.lineWidth = 1;
   ctx.lineCap = 'round';
   for (let py = 0; py < mapH; py += grassSpacing) {
@@ -810,7 +812,7 @@ export function drawMapDecorations(
   // ── 4. Mountain peak markers (× at local maxima) ──
   const hmScaleX = mapW / (gridW - 1);
   const hmScaleY = mapH / (gridH - 1);
-  ctx.strokeStyle = 'rgba(80, 60, 40, 0.6)';
+  ctx.strokeStyle = GAME_PALETTE.contourMajor;
   ctx.lineWidth = 1.2;
   ctx.lineCap = 'butt';
   for (let gy = 1; gy < gridH - 1; gy++) {

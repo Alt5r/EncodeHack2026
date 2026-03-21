@@ -2,7 +2,8 @@
 
 import { useRef, useEffect, useCallback } from 'react';
 import { generateHeightmap, extractContours, generateVegetationImage, generateWaterFeatures, drawMapDecorations, type TerrainParams } from '@/lib/terrain';
-import type { SessionState, Cell, Unit, Village, Wind } from '@/lib/types';
+import { GAME_PALETTE } from '@/lib/game-palette';
+import type { SessionState, Unit, Village, Wind } from '@/lib/types';
 
 interface MapCanvasProps {
   params: TerrainParams;
@@ -43,6 +44,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const terrainCacheRef = useRef<HTMLCanvasElement | null>(null);
   const cachedSizeRef = useRef<{ w: number; h: number } | null>(null);
+  const cachedSignatureRef = useRef<string | null>(null);
   const hoveredCellRef = useRef<{ row: number; col: number } | null>(null);
 
   // Zoom & pan state (refs to avoid re-renders)
@@ -63,15 +65,21 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
 
     const { inset, borderWidth, borderHeight, mapX, mapY, mapW, mapH } = getMapGeometry(w, h);
 
-    // 1. Base parchment fill
-    ctx.fillStyle = '#e8d8b0';
+    // 1. Dusk gradient outside the map boundary
+    const backdrop = ctx.createLinearGradient(0, 0, 0, h);
+    backdrop.addColorStop(0, GAME_PALETTE.canvasBackdropTop);
+    backdrop.addColorStop(0.22, GAME_PALETTE.canvasBackdropUpper);
+    backdrop.addColorStop(0.48, GAME_PALETTE.canvasBackdropMid);
+    backdrop.addColorStop(0.72, GAME_PALETTE.canvasBackdropLower);
+    backdrop.addColorStop(1, GAME_PALETTE.canvasBackdropBottom);
+    ctx.fillStyle = backdrop;
     ctx.fillRect(0, 0, w, h);
 
     // 2. Noise grain
     const imageData = ctx.getImageData(0, 0, offscreen.width, offscreen.height);
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
-      const noise = (Math.random() - 0.5) * 25;
+      const noise = (Math.random() - 0.5) * 18;
       data[i] += noise;
       data[i + 1] += noise;
       data[i + 2] += noise;
@@ -82,11 +90,18 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     const cx = w / 2, cy = h / 2;
     const maxRadius = Math.sqrt(cx * cx + cy * cy);
     const gradient = ctx.createRadialGradient(cx, cy, maxRadius * 0.3, cx, cy, maxRadius);
-    gradient.addColorStop(0, 'rgba(60, 40, 20, 0)');
-    gradient.addColorStop(0.7, 'rgba(60, 40, 20, 0.08)');
-    gradient.addColorStop(1, 'rgba(40, 25, 10, 0.35)');
+    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    gradient.addColorStop(0.68, 'rgba(10, 8, 18, 0.12)');
+    gradient.addColorStop(1, 'rgba(8, 6, 12, 0.48)');
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, w, h);
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = 40;
+    ctx.fillStyle = GAME_PALETTE.pageBase;
+    ctx.fillRect(mapX, mapY, mapW, mapH);
+    ctx.restore();
 
     // 4. Generate terrain
     const heightmap = generateHeightmap(GRID_W, GRID_H, params);
@@ -107,7 +122,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     const grainData = ctx.getImageData(mapX * dpr, mapY * dpr, mapW * dpr, mapH * dpr);
     const gd = grainData.data;
     for (let i = 0; i < gd.length; i += 4) {
-      const noise = (Math.random() - 0.5) * 18;
+      const noise = (Math.random() - 0.5) * 10;
       gd[i] += noise;
       gd[i + 1] += noise;
       gd[i + 2] += noise;
@@ -127,8 +142,8 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     ctx.rect(mapX, mapY, mapW, mapH);
     ctx.clip();
 
-    ctx.strokeStyle = '#8b7355';
-    ctx.lineWidth = 0.4;
+    ctx.strokeStyle = GAME_PALETTE.contourMinor;
+    ctx.lineWidth = 0.55;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
 
@@ -143,8 +158,8 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
 
     // Index contours (every 5th)
     const indexInterval = params.contourInterval * 5;
-    ctx.strokeStyle = '#6b5a42';
-    ctx.lineWidth = 0.9;
+    ctx.strokeStyle = GAME_PALETTE.contourMajor;
+    ctx.lineWidth = 0.95;
     for (const contour of contours) {
       const remainder = contour.level % indexInterval;
       if (remainder > 0.001 && remainder < indexInterval - 0.001) continue;
@@ -165,9 +180,8 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     ctx.rect(mapX, mapY, mapW, mapH);
     ctx.clip();
 
-    // Water colours — opaque base covers vegetation, then tinted on top
-    const waterBase = '#e8d8b0'; // parchment base to cover vegetation
-    const waterColor = 'rgba(55, 125, 190, 0.55)';
+    const waterColor = 'rgba(42, 74, 90, 0.88)';
+    const waterHighlight = 'rgba(136, 204, 255, 0.18)';
 
     // Lakes — translucent water directly over vegetation (matches river colour)
     for (const lake of lakes) {
@@ -261,15 +275,28 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
         ctx.lineJoin = 'round';
         traceBand(pxPts);
         ctx.stroke();
+
+        ctx.strokeStyle = waterHighlight;
+        ctx.lineWidth = Math.max(1.1, width * 0.35);
+        traceBand(pxPts);
+        ctx.stroke();
       }
     }
 
     ctx.restore();
 
     // 7. Map border
-    ctx.strokeStyle = '#1a1a1a';
-    ctx.lineWidth = 3;
+    ctx.save();
+    ctx.strokeStyle = GAME_PALETTE.mapBorder;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+    ctx.shadowBlur = 22;
     ctx.strokeRect(inset, inset, borderWidth, borderHeight);
+    ctx.restore();
+
+    ctx.strokeStyle = GAME_PALETTE.mapBorderMuted;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(inset + 6, inset + 6, borderWidth - 12, borderHeight - 12);
 
     return offscreen;
   }, [params]);
@@ -294,7 +321,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
 
     // ── Grid lines ──
     if (gridVisible) {
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.15)';
+      ctx.strokeStyle = GAME_PALETTE.grid;
       ctx.lineWidth = 0.5;
       for (let i = 0; i <= gridSize; i++) {
         // Vertical lines
@@ -325,30 +352,30 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
           const glowAlpha = 0.2 + pulse * 0.25;
           const coreAlpha = 0.5 + pulse * 0.3;
           // Fire glow edge
-          ctx.fillStyle = `rgba(255, 120, 20, ${glowAlpha.toFixed(2)})`;
+          ctx.fillStyle = `rgba(255, 107, 53, ${glowAlpha.toFixed(2)})`;
           ctx.fillRect(px - 2, py - 2, cellW + 4, cellH + 4);
           // Fire core
-          ctx.fillStyle = `rgba(220, 60, 20, ${coreAlpha.toFixed(2)})`;
+          ctx.fillStyle = `rgba(204, 68, 34, ${coreAlpha.toFixed(2)})`;
           ctx.fillRect(px, py, cellW, cellH);
           break;
         }
         case 'burned': {
-          ctx.fillStyle = 'rgba(40, 30, 25, 0.5)';
+          ctx.fillStyle = 'rgba(42, 31, 31, 0.72)';
           ctx.fillRect(px, py, cellW, cellH);
           break;
         }
         case 'suppressed': {
-          ctx.fillStyle = 'rgba(80, 140, 200, 0.4)';
+          ctx.fillStyle = GAME_PALETTE.suppressed;
           ctx.fillRect(px, py, cellW, cellH);
           break;
         }
         case 'firebreak': {
-          ctx.fillStyle = 'rgba(140, 100, 50, 0.6)';
+          ctx.fillStyle = 'rgba(74, 63, 47, 0.72)';
           ctx.fillRect(px, py, cellW, cellH);
           // Dashed border
           ctx.save();
           ctx.setLineDash([3, 3]);
-          ctx.strokeStyle = 'rgba(100, 70, 30, 0.8)';
+          ctx.strokeStyle = 'rgba(122, 107, 85, 0.82)';
           ctx.lineWidth = 1;
           ctx.strokeRect(px, py, cellW, cellH);
           ctx.restore();
@@ -371,7 +398,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     if (hovered && (!selected || hovered.row !== selected.row || hovered.col !== selected.col)) {
       const hx = mapX + hovered.col * cellW;
       const hy = mapY + hovered.row * cellH;
-      ctx.strokeStyle = 'rgba(255, 255, 200, 0.45)';
+      ctx.strokeStyle = GAME_PALETTE.hover;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(hx + 0.5, hy + 0.5, cellW - 1, cellH - 1);
     }
@@ -380,7 +407,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     if (selected) {
       const px = mapX + selected.col * cellW;
       const py = mapY + selected.row * cellH;
-      ctx.strokeStyle = 'rgba(255, 255, 200, 0.9)';
+      ctx.strokeStyle = GAME_PALETTE.selected;
       ctx.lineWidth = 2;
       ctx.strokeRect(px + 1, py + 1, cellW - 2, cellH - 2);
     }
@@ -409,10 +436,13 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     ctx.scale(dpr, dpr);
 
     // Rebuild terrain cache if size changed
+    const signature =
+      `${w}x${h}:${params.seed}:${params.frequency}:${params.octaves}:${params.lacunarity}:${params.persistence}:${params.contourInterval}`;
     const cached = cachedSizeRef.current;
-    if (!cached || cached.w !== w || cached.h !== h) {
+    if (!cached || cached.w !== w || cached.h !== h || cachedSignatureRef.current !== signature) {
       terrainCacheRef.current = renderTerrain(w, h, dpr);
       cachedSizeRef.current = { w, h };
+      cachedSignatureRef.current = signature;
     }
 
     const zoom = zoomRef.current;
@@ -447,19 +477,19 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     const barY = h - 30;
 
     // Background for readability
-    ctx.fillStyle = 'rgba(212, 197, 160, 0.85)';
+    ctx.fillStyle = GAME_PALETTE.panelBgTertiary;
     ctx.fillRect(barX - 4, barY - 4, barSegments * baseSegmentWidth + 40, barHeight + 24);
 
     for (let i = 0; i < barSegments; i++) {
-      ctx.fillStyle = i % 2 === 0 ? '#1a1a1a' : '#ffffff';
+      ctx.fillStyle = i % 2 === 0 ? GAME_PALETTE.accent : GAME_PALETTE.pageBase;
       ctx.fillRect(barX + i * baseSegmentWidth, barY, baseSegmentWidth, barHeight);
     }
-    ctx.strokeStyle = '#1a1a1a';
+    ctx.strokeStyle = GAME_PALETTE.mapBorder;
     ctx.lineWidth = 0.8;
     ctx.strokeRect(barX, barY, barSegments * baseSegmentWidth, barHeight);
 
-    ctx.fillStyle = '#1a1a1a';
-    ctx.font = '11px Georgia, serif';
+    ctx.fillStyle = GAME_PALETTE.accentStrong;
+    ctx.font = '11px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     for (let i = 0; i <= barSegments; i++) {
@@ -469,7 +499,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     }
     ctx.textAlign = 'left';
     ctx.fillText('km', barX + barSegments * baseSegmentWidth + 6, barY + barHeight + 3);
-  }, [renderTerrain, drawOverlay, gameState, showGrid, selectedCell]);
+  }, [drawOverlay, gameState, params, renderTerrain, selectedCell, showGrid]);
 
   // ── Helper: clamp pan so no white space shows ──
   const clampPan = useCallback((pan: { x: number; y: number }, zoom: number, w: number, h: number) => {
@@ -550,6 +580,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
 
     const handleResize = () => {
       cachedSizeRef.current = null; // invalidate cache on resize
+      cachedSignatureRef.current = null;
       redraw();
     };
 
@@ -743,9 +774,9 @@ function drawHouseCell(
 
   if (isLarge) {
     // Larger house
-    ctx.fillStyle = 'rgba(170, 140, 95, 0.8)';
+    ctx.fillStyle = GAME_PALETTE.village;
     ctx.fillRect(px + cellW * 0.1, py + cellH * 0.38, cellW * 0.8, cellH * 0.58);
-    ctx.fillStyle = 'rgba(120, 50, 30, 0.85)';
+    ctx.fillStyle = GAME_PALETTE.villageRoof;
     ctx.beginPath();
     ctx.moveTo(px + cellW * 0.05, py + cellH * 0.42);
     ctx.lineTo(px + cellW * 0.5, py + cellH * 0.08);
@@ -753,17 +784,17 @@ function drawHouseCell(
     ctx.closePath();
     ctx.fill();
     // Windows
-    ctx.fillStyle = 'rgba(180, 200, 220, 0.6)';
+    ctx.fillStyle = 'rgba(232, 168, 107, 0.78)';
     ctx.fillRect(px + cellW * 0.2, py + cellH * 0.55, cellW * 0.15, cellH * 0.15);
     ctx.fillRect(px + cellW * 0.65, py + cellH * 0.55, cellW * 0.15, cellH * 0.15);
     // Door
-    ctx.fillStyle = 'rgba(90, 55, 30, 0.7)';
+    ctx.fillStyle = 'rgba(26, 21, 32, 0.82)';
     ctx.fillRect(px + cellW * 0.42, py + cellH * 0.65, cellW * 0.16, cellH * 0.3);
   } else {
     // Small house
-    ctx.fillStyle = 'rgba(180, 145, 100, 0.8)';
+    ctx.fillStyle = GAME_PALETTE.village;
     ctx.fillRect(px + cellW * 0.2, py + cellH * 0.45, cellW * 0.6, cellH * 0.5);
-    ctx.fillStyle = 'rgba(140, 55, 35, 0.85)';
+    ctx.fillStyle = GAME_PALETTE.villageRoof;
     ctx.beginPath();
     ctx.moveTo(px + cellW * 0.12, py + cellH * 0.48);
     ctx.lineTo(px + cellW * 0.5, py + cellH * 0.15);
@@ -771,7 +802,7 @@ function drawHouseCell(
     ctx.closePath();
     ctx.fill();
     // Door
-    ctx.fillStyle = 'rgba(90, 55, 30, 0.7)';
+    ctx.fillStyle = 'rgba(26, 21, 32, 0.82)';
     ctx.fillRect(px + cellW * 0.42, py + cellH * 0.7, cellW * 0.16, cellH * 0.25);
   }
 }
@@ -788,14 +819,13 @@ function drawVillage(
   ctx.save();
 
   // Track actual house positions to centre the label
-  let sumR = 0, sumC = 0, maxR = 0, count = 0;
+  let sumC = 0, maxR = 0, count = 0;
   for (let r = 0; r < size; r++) {
     for (let c = 0; c < size; c++) {
       if (!houseCells.has(`${r},${c}`)) continue;
       const px = mapX + (col + c) * cellW;
       const py = mapY + (row + r) * cellH;
       drawHouseCell(ctx, px, py, cellW, cellH, r, c);
-      sumR += r;
       sumC += c;
       if (r > maxR) maxR = r;
       count++;
@@ -806,8 +836,8 @@ function drawVillage(
   const avgC = count > 0 ? sumC / count : size / 2;
   const labelX = mapX + (col + avgC + 0.5) * cellW;
   const labelY = mapY + (row + maxR + 1) * cellH + 4;
-  ctx.fillStyle = '#1a1a1a';
-  ctx.font = 'bold 10px Georgia, serif';
+  ctx.fillStyle = GAME_PALETTE.accentStrong;
+  ctx.font = 'bold 10px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillText('VILLAGE', labelX, labelY);
@@ -830,12 +860,12 @@ function drawUnit(
   switch (unit.type) {
     case 'helicopter': {
       // Helicopter — circle body + rotor line
-      ctx.fillStyle = 'rgba(30, 100, 180, 0.8)';
+      ctx.fillStyle = GAME_PALETTE.helicopterBody;
       ctx.beginPath();
       ctx.arc(cx, cy, r * 0.6, 0, Math.PI * 2);
       ctx.fill();
       // Rotor
-      ctx.strokeStyle = 'rgba(30, 80, 160, 0.9)';
+      ctx.strokeStyle = GAME_PALETTE.helicopterHighlight;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(cx - r, cy - r * 0.3);
@@ -850,7 +880,7 @@ function drawUnit(
     }
     case 'ground_crew': {
       // Ground crew — small person shape
-      ctx.fillStyle = 'rgba(40, 120, 40, 0.85)';
+      ctx.fillStyle = GAME_PALETTE.groundBody;
       // Head
       ctx.beginPath();
       ctx.arc(cx, cy - r * 0.4, r * 0.25, 0, Math.PI * 2);
@@ -859,14 +889,14 @@ function drawUnit(
       ctx.beginPath();
       ctx.moveTo(cx, cy - r * 0.15);
       ctx.lineTo(cx, cy + r * 0.4);
-      ctx.strokeStyle = 'rgba(40, 120, 40, 0.85)';
+      ctx.strokeStyle = GAME_PALETTE.groundHighlight;
       ctx.lineWidth = 2;
       ctx.stroke();
       // Shovel (diagonal line)
       ctx.beginPath();
       ctx.moveTo(cx - r * 0.4, cy - r * 0.1);
       ctx.lineTo(cx + r * 0.5, cy + r * 0.6);
-      ctx.strokeStyle = 'rgba(100, 80, 40, 0.8)';
+      ctx.strokeStyle = GAME_PALETTE.groundHighlight;
       ctx.lineWidth = 1.5;
       ctx.stroke();
       break;
@@ -874,7 +904,7 @@ function drawUnit(
   }
 
   // Label underneath
-  ctx.fillStyle = '#1a1a1a';
+  ctx.fillStyle = GAME_PALETTE.accentStrong;
   ctx.font = 'bold 9px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -898,19 +928,19 @@ function drawWindIndicator(
   ctx.save();
 
   // Background circle
-  ctx.fillStyle = 'rgba(255, 255, 240, 0.7)';
+  ctx.fillStyle = GAME_PALETTE.panelBgTertiary;
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = '#1a1a1a';
+  ctx.strokeStyle = GAME_PALETTE.mapBorder;
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
   // Arrow
   ctx.translate(x, y);
   ctx.rotate(angle);
-  ctx.fillStyle = '#c03020';
-  ctx.strokeStyle = '#c03020';
+  ctx.fillStyle = GAME_PALETTE.accent;
+  ctx.strokeStyle = GAME_PALETTE.accent;
   ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.moveTo(-arrowLen, 0);
@@ -927,8 +957,8 @@ function drawWindIndicator(
   ctx.translate(-x, -y);
 
   // Label
-  ctx.fillStyle = '#1a1a1a';
-  ctx.font = '12px Georgia, serif';
+  ctx.fillStyle = GAME_PALETTE.accentStrong;
+  ctx.font = '12px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillText(`${wind.direction} ${wind.speed_mph}mph`, x, y + radius + 6);

@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useRef, useCallback } from 'react';
+import { GAME_PALETTE } from '@/lib/game-palette';
 import type { TranscriptMessage, VoiceKey } from '@/lib/radio-types';
 
 const ROLE_COLORS: Record<string, string> = {
-  command: '#8b5e3c',
-  helicopter: '#4a7c59',
-  ground: '#a0522d',
+  command: GAME_PALETTE.accent,
+  helicopter: GAME_PALETTE.waterHighlight,
+  ground: GAME_PALETTE.groundHighlight,
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -38,6 +39,8 @@ export default function RadioTranscript({
   const scrollRef = useRef<HTMLDivElement>(null);
   const barsRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
+  const chatterAnimationUntilRef = useRef(0);
+  const chatterFrameRef = useRef(0);
 
   // Auto-scroll when new messages arrive
   useEffect(() => {
@@ -46,8 +49,14 @@ export default function RadioTranscript({
     }
   }, [messages.length]);
 
+  // Backup-style radio chatter pulse when a message arrives, even without TTS audio.
+  useEffect(() => {
+    if (messages.length === 0) return;
+    chatterAnimationUntilRef.current = performance.now() + 3000;
+  }, [messages.length]);
+
   // Waveform animation driven by real AnalyserNode frequency data
-  const animateWaveform = useCallback(() => {
+  const updateWaveform = useCallback(() => {
     const container = barsRef.current;
     if (!container) return;
 
@@ -64,7 +73,18 @@ export default function RadioTranscript({
         const normalized = freqData[binIndex] / 255;
         const height = Math.max(IDLE_HEIGHT, normalized);
         (bars[i] as HTMLElement).style.height = `${height * 100}%`;
-        (bars[i] as HTMLElement).style.background = '#8b5e3c';
+        (bars[i] as HTMLElement).style.background = GAME_PALETTE.accent;
+      }
+    } else if (performance.now() < chatterAnimationUntilRef.current) {
+      const now = performance.now();
+      if (now - chatterFrameRef.current > 100) {
+        chatterFrameRef.current = now;
+        for (let i = 0; i < BAR_COUNT; i++) {
+          const el = bars[i] as HTMLElement;
+          const jitter = 0.1 + Math.random() * 0.9;
+          el.style.height = `${jitter * 100}%`;
+          el.style.background = GAME_PALETTE.accent;
+        }
       }
     } else {
       // Decay to idle baseline
@@ -73,18 +93,21 @@ export default function RadioTranscript({
         const current = parseFloat(el.style.height) / 100 || IDLE_HEIGHT;
         const decayed = current + (IDLE_HEIGHT - current) * 0.15;
         el.style.height = `${decayed * 100}%`;
-        el.style.background = 'rgba(120, 90, 60, 0.3)';
+        el.style.background = GAME_PALETTE.panelDivider;
       }
     }
 
-    rafRef.current = requestAnimationFrame(animateWaveform);
   }, [analyserNode, isPlaying]);
 
   useEffect(() => {
     if (!isOpen) return;
-    rafRef.current = requestAnimationFrame(animateWaveform);
+    const tick = () => {
+      updateWaveform();
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [isOpen, animateWaveform]);
+  }, [isOpen, updateWaveform]);
 
   // Status text
   const statusText = isPlaying && currentSpeaker
@@ -98,8 +121,8 @@ export default function RadioTranscript({
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        background: 'rgba(212, 197, 160, 0.95)',
-        border: '2px solid rgba(120, 90, 60, 0.4)',
+        background: GAME_PALETTE.panelBg,
+        border: `1px solid ${GAME_PALETTE.panelOutline}`,
         borderTop: 'none',
         fontFamily: "'Courier New', monospace",
         overflow: 'hidden',
@@ -109,13 +132,13 @@ export default function RadioTranscript({
       <div
         style={{
           padding: '14px 18px',
-          borderBottom: '1px solid rgba(120, 90, 60, 0.3)',
-          background: 'rgba(180, 160, 120, 0.4)',
+          borderBottom: `1px solid ${GAME_PALETTE.panelDivider}`,
+          background: GAME_PALETTE.panelBgSecondary,
           flexShrink: 0,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: '#4a3728', letterSpacing: '0.15em' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: GAME_PALETTE.accent, letterSpacing: '0.15em' }}>
             RADIO COMMS
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -124,12 +147,12 @@ export default function RadioTranscript({
                 width: 7,
                 height: 7,
                 borderRadius: '50%',
-                background: isPlaying ? '#5a8a4a' : '#8a7a5a',
-                boxShadow: isPlaying ? '0 0 8px #5a8a4a' : 'none',
+                background: isPlaying ? GAME_PALETTE.success : GAME_PALETTE.textMuted,
+                boxShadow: isPlaying ? `0 0 8px ${GAME_PALETTE.success}` : 'none',
                 transition: 'all 0.3s',
               }}
             />
-            <span style={{ fontSize: 10, color: '#6a5a4a', letterSpacing: '0.1em' }}>
+            <span style={{ fontSize: 10, color: GAME_PALETTE.textMuted, letterSpacing: '0.1em' }}>
               {statusText}
             </span>
             {isPlaying && currentVoiceKey && (
@@ -137,7 +160,7 @@ export default function RadioTranscript({
                 style={{
                   fontSize: 8,
                   fontWeight: 700,
-                  color: '#d4c5a0',
+                  color: GAME_PALETTE.pageBase,
                   background: ROLE_COLORS[currentVoiceKey] || '#8a7a5a',
                   padding: '1px 5px',
                   borderRadius: 2,
@@ -153,13 +176,13 @@ export default function RadioTranscript({
         {/* Frequency */}
         <div
           style={{
-            background: 'rgba(60, 50, 35, 0.85)',
+            background: GAME_PALETTE.panelBgTertiary,
             borderRadius: 2,
             padding: '6px 12px',
             marginBottom: 10,
           }}
         >
-          <span style={{ fontSize: 15, color: '#c4a55a', letterSpacing: '0.2em', fontWeight: 700 }}>
+          <span style={{ fontSize: 15, color: GAME_PALETTE.accentStrong, letterSpacing: '0.2em', fontWeight: 700 }}>
             142.850 MHz
           </span>
         </div>
@@ -173,7 +196,7 @@ export default function RadioTranscript({
             justifyContent: 'center',
             gap: 2,
             height: 28,
-            background: 'rgba(60, 50, 35, 0.3)',
+            background: GAME_PALETTE.panelBgTertiary,
             borderRadius: 2,
             padding: '0 10px',
           }}
@@ -184,7 +207,7 @@ export default function RadioTranscript({
               style={{
                 width: 3,
                 height: `${IDLE_HEIGHT * 100}%`,
-                background: 'rgba(120, 90, 60, 0.3)',
+                background: GAME_PALETTE.panelDivider,
                 borderRadius: 1,
               }}
             />
@@ -202,7 +225,7 @@ export default function RadioTranscript({
         }}
       >
         {messages.length === 0 && (
-          <div style={{ textAlign: 'center', color: '#9a8a6a', fontSize: 12, paddingTop: 60 }}>
+          <div style={{ textAlign: 'center', color: GAME_PALETTE.textMuted, fontSize: 12, paddingTop: 60 }}>
             Awaiting transmission...
           </div>
         )}
@@ -214,7 +237,7 @@ export default function RadioTranscript({
                 style={{
                   fontSize: 9,
                   fontWeight: 700,
-                  color: '#d4c5a0',
+                  color: GAME_PALETTE.pageBase,
                   background: ROLE_COLORS[msg.voiceKey] || '#8a7a5a',
                   padding: '1px 6px',
                   borderRadius: 2,
@@ -226,11 +249,11 @@ export default function RadioTranscript({
               <span style={{ fontSize: 11, fontWeight: 700, color: ROLE_COLORS[msg.voiceKey] || '#8a7a5a' }}>
                 {msg.speaker}
               </span>
-              <span style={{ fontSize: 9, color: '#9a8a6a', marginLeft: 'auto' }}>
+              <span style={{ fontSize: 9, color: GAME_PALETTE.textMuted, marginLeft: 'auto' }}>
                 {msg.time}
               </span>
             </div>
-            <p style={{ margin: 0, fontSize: 12, lineHeight: 1.55, color: '#3a2e20' }}>
+            <p style={{ margin: 0, fontSize: 12, lineHeight: 1.55, color: GAME_PALETTE.textPrimary }}>
               {msg.text}
             </p>
           </div>
@@ -241,12 +264,12 @@ export default function RadioTranscript({
       <div
         style={{
           padding: '8px 18px',
-          borderTop: '1px solid rgba(120, 90, 60, 0.3)',
-          background: 'rgba(180, 160, 120, 0.3)',
+          borderTop: `1px solid ${GAME_PALETTE.panelDivider}`,
+          background: GAME_PALETTE.panelBgSecondary,
           display: 'flex',
           justifyContent: 'space-between',
           fontSize: 9,
-          color: '#8a7a5a',
+          color: GAME_PALETTE.textMuted,
           letterSpacing: '0.1em',
           flexShrink: 0,
         }}

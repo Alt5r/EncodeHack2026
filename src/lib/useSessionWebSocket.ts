@@ -23,16 +23,16 @@ export function useSessionWebSocket(
   sessionId: string | null,
   handlers: WebSocketHandlers,
 ): UseSessionWebSocketReturn {
-  const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // Keep handlers in a ref so reconnect logic always calls the latest version
   const handlersRef = useRef(handlers);
-  handlersRef.current = handlers;
 
   const reconnectAttempt = useRef(0);
   const wsRef = useRef<WebSocket | null>(null);
   const unmountedRef = useRef(false);
+  const connectRef = useRef<(sid: string) => void>(() => {});
 
   const connect = useCallback((sid: string) => {
     if (unmountedRef.current) return;
@@ -45,8 +45,8 @@ export function useSessionWebSocket(
 
     ws.onopen = () => {
       if (unmountedRef.current) { ws.close(); return; }
-      setIsConnected(true);
-      setError(null);
+      setConnectionState(true);
+      setConnectionError(null);
       reconnectAttempt.current = 0;
     };
 
@@ -67,26 +67,32 @@ export function useSessionWebSocket(
     };
 
     ws.onerror = () => {
-      setError('WebSocket error');
+      setConnectionError('WebSocket error');
     };
 
     ws.onclose = () => {
       if (unmountedRef.current) return;
-      setIsConnected(false);
+      setConnectionState(false);
 
       // Exponential backoff: 1s → 2s → 4s → 8s max
       const delay = Math.min(1000 * 2 ** reconnectAttempt.current, 8000);
       reconnectAttempt.current += 1;
-      setTimeout(() => connect(sid), delay);
+      setTimeout(() => connectRef.current(sid), delay);
     };
   }, []);
+
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
+
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
 
   useEffect(() => {
     unmountedRef.current = false;
 
     if (!sessionId) {
-      setIsConnected(false);
-      setError(null);
       return;
     }
 
@@ -99,5 +105,8 @@ export function useSessionWebSocket(
     };
   }, [sessionId, connect]);
 
-  return { isConnected, error };
+  return {
+    isConnected: sessionId ? connectionState : false,
+    error: sessionId ? connectionError : null,
+  };
 }

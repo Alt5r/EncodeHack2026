@@ -1,5 +1,6 @@
 import { createNoise2D } from 'simplex-noise';
-import { mulberry32, generateWaterFeatures, type TerrainParams, type RiverPath, type LakeRegion } from './terrain';
+import { mulberry32, generateWaterFeatures, type TerrainParams } from './terrain';
+import { GAME_PALETTE } from './game-palette';
 
 // Derived from heightmap length — no hardcoded resolution
 function getGridDims(heightmap: Float32Array): { GRID_W: number; GRID_H: number } {
@@ -8,6 +9,13 @@ function getGridDims(heightmap: Float32Array): { GRID_W: number; GRID_H: number 
 }
 
 export type WaterType = 'none' | 'water';
+export type BackendVegetationType = 'clearing' | 'meadow' | 'woodland' | 'forest';
+
+export interface SessionTerrainCellData {
+  elevation: number;
+  vegetation: BackendVegetationType;
+  water: WaterType;
+}
 
 export interface CellTerrain {
   elevation: number;         // 0–1 raw
@@ -27,6 +35,87 @@ export interface CellTerrain {
  * Maps "row,col" → WaterType. Cached per grid size.
  */
 let _waterCache: { gridSize: number; seed: number; map: Map<string, WaterType> } | null = null;
+
+function createVegetationNoise(params: TerrainParams) {
+  const vegRng = mulberry32(params.seed + 1337);
+  const warpRng = mulberry32(params.seed + 7919);
+
+  return {
+    vegNoise: createNoise2D(vegRng),
+    warpNoise: createNoise2D(warpRng),
+  };
+}
+
+function sampleVegetation(
+  normX: number,
+  normY: number,
+  elevation: number,
+  mapW: number,
+  mapH: number,
+  vegNoise: ReturnType<typeof createNoise2D>,
+  warpNoise: ReturnType<typeof createNoise2D>,
+): {
+  vegetationType: string;
+  vegetationColor: string;
+  backendVegetation: BackendVegetationType;
+  blended: number;
+} {
+  const fullX = normX * mapW;
+  const fullY = normY * mapH;
+
+  const vegFreq = 0.003;
+  const warpFreq = 0.0015;
+  const warpAmp = 60;
+
+  const warpX = warpNoise(fullX * warpFreq, fullY * warpFreq) * warpAmp;
+  const warpY = warpNoise(fullX * warpFreq + 100, fullY * warpFreq + 100) * warpAmp;
+
+  let veg = 0;
+  let amp = 1;
+  let freq = vegFreq;
+  let totalAmp = 0;
+  for (let o = 0; o < 3; o++) {
+    veg += vegNoise((fullX + warpX) * freq, (fullY + warpY) * freq) * amp;
+    totalAmp += amp;
+    freq *= 2.0;
+    amp *= 0.5;
+  }
+  veg = (veg / totalAmp + 1) / 2;
+
+  const blended = (1 - elevation) * 0.55 + veg * 0.45;
+
+  if (blended >= 0.59) {
+    return {
+      vegetationType: 'Forest',
+      vegetationColor: GAME_PALETTE.forestPeak,
+      backendVegetation: 'forest',
+      blended,
+    };
+  }
+  if (blended >= 0.46) {
+    return {
+      vegetationType: 'Woodland',
+      vegetationColor: GAME_PALETTE.forestHigh,
+      backendVegetation: 'woodland',
+      blended,
+    };
+  }
+  if (blended >= 0.33) {
+    return {
+      vegetationType: 'Meadow',
+      vegetationColor: GAME_PALETTE.forestMid,
+      backendVegetation: 'meadow',
+      blended,
+    };
+  }
+
+  return {
+    vegetationType: 'Clearing',
+    vegetationColor: GAME_PALETTE.forestLow,
+    backendVegetation: 'clearing',
+    blended,
+  };
+}
 
 export function getWaterMap(
   heightmap: Float32Array,
@@ -69,6 +158,43 @@ export function getWaterMap(
 
   _waterCache = { gridSize, seed: params.seed, map };
   return map;
+}
+
+export function buildSessionTerrainGrid(
+  gridSize: number,
+  heightmap: Float32Array,
+  mapW: number,
+  mapH: number,
+  params: TerrainParams,
+): SessionTerrainCellData[][] {
+  const { GRID_W, GRID_H } = getGridDims(heightmap);
+  const waterMap = getWaterMap(heightmap, gridSize, params);
+  const { vegNoise, warpNoise } = createVegetationNoise(params);
+
+  return Array.from({ length: gridSize }, (_, row) =>
+    Array.from({ length: gridSize }, (_, col) => {
+      const normX = (col + 0.5) / gridSize;
+      const normY = (row + 0.5) / gridSize;
+      const gx = Math.min(GRID_W - 1, Math.max(0, Math.round(normX * (GRID_W - 1))));
+      const gy = Math.min(GRID_H - 1, Math.max(0, Math.round(normY * (GRID_H - 1))));
+      const elevation = heightmap[gy * GRID_W + gx];
+      const vegetation = sampleVegetation(
+        normX,
+        normY,
+        elevation,
+        mapW,
+        mapH,
+        vegNoise,
+        warpNoise,
+      );
+
+      return {
+        elevation,
+        vegetation: vegetation.backendVegetation,
+        water: waterMap.get(`${row},${col}`) ?? 'none',
+      };
+    }),
+  );
 }
 
 /**
@@ -120,52 +246,18 @@ export function getCellTerrain(
   else slopeLabel = 'Steep';
 
   // ── Vegetation (same noise + blend as generateVegetationImage) ──
-  const vegRng = mulberry32(params.seed + 1337);
-  const warpRng = mulberry32(params.seed + 7919);
-  const vegNoise = createNoise2D(vegRng);
-  const warpNoise = createNoise2D(warpRng);
-
-  // CSS position of cell centre within the map area
-  const fullX = normX * mapW;
-  const fullY = normY * mapH;
-
-  const vegFreq = 0.003;
-  const warpFreq = 0.0015;
-  const warpAmp = 60;
-
-  const warpX = warpNoise(fullX * warpFreq, fullY * warpFreq) * warpAmp;
-  const warpY = warpNoise(fullX * warpFreq + 100, fullY * warpFreq + 100) * warpAmp;
-
-  let veg = 0;
-  let amp = 1;
-  let freq = vegFreq;
-  let totalAmp = 0;
-  for (let o = 0; o < 3; o++) {
-    veg += vegNoise((fullX + warpX) * freq, (fullY + warpY) * freq) * amp;
-    totalAmp += amp;
-    freq *= 2.0;
-    amp *= 0.5;
-  }
-  veg = (veg / totalAmp + 1) / 2; // normalise to [0,1]
-
-  const blended = (1 - elevation) * 0.55 + veg * 0.45;
-
-  // Classify using the same smoothstep edge thresholds as the renderer
-  let vegetationType: string;
-  let vegetationColor: string;
-  if (blended >= 0.59) {
-    vegetationType = 'Forest';
-    vegetationColor = '#687748';
-  } else if (blended >= 0.46) {
-    vegetationType = 'Woodland';
-    vegetationColor = '#8b9468';
-  } else if (blended >= 0.33) {
-    vegetationType = 'Meadow';
-    vegetationColor = '#abad82';
-  } else {
-    vegetationType = 'Clearing';
-    vegetationColor = '#ddd4b8';
-  }
+  const { vegNoise, warpNoise } = createVegetationNoise(params);
+  const vegetation = sampleVegetation(
+    normX,
+    normY,
+    elevation,
+    mapW,
+    mapH,
+    vegNoise,
+    warpNoise,
+  );
+  const vegetationType = vegetation.vegetationType;
+  const vegetationColor = vegetation.vegetationColor;
 
   // ── Water ──
   const waterMap = getWaterMap(heightmap, gridSize, params);
@@ -176,7 +268,7 @@ export function getCellTerrain(
 
   // ── Traversal difficulty (slope + vegetation density) ──
   const slopeScore = Math.min(1, slope / 0.12);
-  const vegScore = Math.min(1, blended);
+  const vegScore = Math.min(1, vegetation.blended);
   let traversalScore = slopeScore * 0.5 + vegScore * 0.5;
 
   let traversalDifficulty: string;

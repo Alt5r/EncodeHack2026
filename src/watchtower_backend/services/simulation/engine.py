@@ -60,9 +60,9 @@ _INTENSITY_SPREAD: dict[FireIntensity, float] = {
 }
 
 _INTENSITY_FUEL_CONSUMPTION: dict[FireIntensity, float] = {
-    FireIntensity.EMBER: 0.05,
-    FireIntensity.BURNING: 0.12,
-    FireIntensity.INFERNO: 0.20,
+    FireIntensity.EMBER: 0.015,
+    FireIntensity.BURNING: 0.03,
+    FireIntensity.INFERNO: 0.06,
 }
 
 _INTENSITY_SUPPRESS_CHANCE: dict[FireIntensity, float] = {
@@ -72,7 +72,7 @@ _INTENSITY_SUPPRESS_CHANCE: dict[FireIntensity, float] = {
 }
 
 # --- Spread constants ---
-_BASE_RATE = 0.12
+_BASE_RATE = 0.096
 _MAX_SPREAD_PROB = 0.65
 _DIAGONAL_PENALTY = 0.7
 

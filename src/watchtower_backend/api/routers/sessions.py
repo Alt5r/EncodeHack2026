@@ -7,6 +7,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from watchtower_backend.api.dependencies import SessionManagerDependency
 from watchtower_backend.api.schemas.sessions import SessionCreateRequest, SessionDetail, SessionRead
 from watchtower_backend.domain.models.simulation import TerrainCell
+from watchtower_backend.services.sessions.manager import SessionManager
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -66,10 +67,10 @@ async def terminate_session(
 async def session_stream(
     websocket: WebSocket,
     session_id: str,
-    session_manager: SessionManagerDependency,
 ) -> None:
     """Stream snapshots and events for a session."""
     await websocket.accept()
+    session_manager: SessionManager = websocket.app.state.session_manager
     subscriber_manager = await session_manager.subscribe(session_id=session_id)
     try:
         async with subscriber_manager as queue:

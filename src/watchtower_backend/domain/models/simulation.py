@@ -97,7 +97,7 @@ class VillageState(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     top_left: Coordinate
-    size: int = Field(default=4, ge=2, le=10)
+    size: int = Field(default=14, ge=2, le=20)
     is_intact: bool = True
 
 
