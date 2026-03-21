@@ -71,6 +71,8 @@ _INTENSITY_SUPPRESS_CHANCE: dict[FireIntensity, float] = {
     FireIntensity.INFERNO: 0.5,
 }
 
+_MIN_PERSISTENT_FUEL = 0.01
+
 # --- Spread constants ---
 _BASE_RATE = 0.096
 _MAX_SPREAD_PROB = 0.65
@@ -241,6 +243,7 @@ class SimulationEngine:
         """Advance burn ticks, consume fuel, update intensity. Return burned-out cells."""
         burned_out: list[Coordinate] = []
         to_remove: list[Coordinate] = []
+        burnout_unlocked = self._natural_burnout_unlocked()
 
         for coord, fire_state in self._fire_states.items():
             # Consume fuel
@@ -249,6 +252,11 @@ class SimulationEngine:
 
             # Check burn-out
             if fire_state.fuel <= 0.0:
+                if not burnout_unlocked:
+                    # Passive burnout is disabled until agents have actually suppressed fire.
+                    fire_state.fuel = _MIN_PERSISTENT_FUEL
+                    fire_state.intensity = FireIntensity.EMBER
+                    continue
                 fire_state.fuel = 0.0
                 to_remove.append(coord)
                 burned_out.append(coord)
@@ -575,6 +583,10 @@ class SimulationEngine:
             )
             self._session_state.winner = "fire"
             return
-        if not fire_cells:
+        if not fire_cells and self._natural_burnout_unlocked():
             self._session_state.status = GameStatus.WON
             self._session_state.winner = "player"
+
+    def _natural_burnout_unlocked(self) -> bool:
+        """Return whether the fire is allowed to resolve naturally."""
+        return bool(self._session_state.suppressed_cells)

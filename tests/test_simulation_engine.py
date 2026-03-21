@@ -4,6 +4,7 @@ from watchtower_backend.domain.commands import UnitCommand
 from watchtower_backend.domain.models.simulation import (
     CommandAction,
     FireIntensity,
+    GameStatus,
     TerrainCell,
     VegetationType,
     WaterType,
@@ -338,9 +339,10 @@ def test_fuel_depletes_over_time() -> None:
 
 
 def test_clearing_burns_out_fast() -> None:
-    """Clearing cells (fuel=0.2) should burn out within ~5 ticks."""
+    """Clearing cells can burn out once suppression has already happened elsewhere."""
     grid = _make_terrain_grid(size=24, vegetation=VegetationType.CLEARING)
     engine = _make_engine(fire_cells=[(12, 12)], terrain_grid=grid)
+    engine.session_state.suppressed_cells.append((2, 2))
 
     for _ in range(8):
         engine.step(commands=[])
@@ -348,12 +350,27 @@ def test_clearing_burns_out_fast() -> None:
     # Cell should have burned out and moved to burned_cells
     assert (12, 12) not in engine.session_state.fire_cells
     assert (12, 12) in engine.session_state.burned_cells
+    assert engine.session_state.status == GameStatus.WON
+
+
+def test_fire_does_not_burn_out_before_suppression() -> None:
+    """Without successful suppression, passive burnout should be disabled."""
+    grid = _make_terrain_grid(size=24, vegetation=VegetationType.CLEARING)
+    engine = _make_engine(fire_cells=[(12, 12)], terrain_grid=grid)
+
+    for _ in range(12):
+        engine.step(commands=[])
+
+    assert (12, 12) in engine.session_state.fire_cells
+    assert (12, 12) not in engine.session_state.burned_cells
+    assert engine.session_state.status != GameStatus.WON
 
 
 def test_burned_out_cells_stop_spreading() -> None:
-    """Burned-out cells should not spread fire."""
+    """Burned-out cells should not spread fire once burnout has been unlocked."""
     grid = _make_terrain_grid(size=24, vegetation=VegetationType.CLEARING)
     engine = _make_engine(fire_cells=[(12, 12)], terrain_grid=grid)
+    engine.session_state.suppressed_cells.append((2, 2))
 
     # Run until the cell burns out
     for _ in range(10):

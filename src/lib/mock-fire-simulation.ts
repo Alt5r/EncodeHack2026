@@ -131,6 +131,10 @@ function buildScore(state: SessionState, villageCells: Set<string>): ScoreSummar
   };
 }
 
+function naturalBurnoutUnlocked(state: SessionState): boolean {
+  return state.cells.some((cell) => cell.state === 'suppressed');
+}
+
 export function advanceMockSessionState(
   state: SessionState,
   terrainGrid: SessionTerrainCellData[][],
@@ -152,10 +156,15 @@ export function advanceMockSessionState(
   const nextFire: Cell[] = [];
   const nextBurned = [...burnedCells];
   const newKeys = new Set<string>();
+  const burnoutUnlocked = naturalBurnoutUnlocked(state);
 
   for (const cell of currentFire) {
     const remainingFuel = Math.max(0, cell.fuel - 0.045);
     if (remainingFuel <= 0.01) {
+      if (!burnoutUnlocked) {
+        nextFire.push({ ...cell, fuel: 0.01, moisture: getMoisture(cell.row, cell.col, terrainGrid) });
+        continue;
+      }
       nextBurned.push({ ...cell, state: 'burned', fuel: 0, moisture: 0 });
       occupied.delete(coordinateKey(cell.row, cell.col));
       continue;
@@ -207,7 +216,7 @@ export function advanceMockSessionState(
   const nextState: SessionState = {
     ...state,
     tick: state.tick + 1,
-    status: activeVillageFire ? 'lost' : nextFire.length === 0 ? 'won' : 'running',
+    status: activeVillageFire ? 'lost' : nextFire.length === 0 && burnoutUnlocked ? 'won' : 'running',
     cells: [...staticCells, ...nextBurned, ...nextFire],
   };
 
