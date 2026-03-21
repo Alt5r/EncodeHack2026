@@ -1,0 +1,34 @@
+---
+description: Pydantic v2 model usage for data validation, request/response schemas, and serialization across the application.
+globs: **/models/**/*.py, **/schemas/**/*.py, **/app/**/*.py
+alwaysApply: false
+---
+
+- **Pydantic v2:** Use Pydantic v2 as the standard for all data validation
+  - Prefer Pydantic models over raw dictionaries for input validation
+  - Use `BaseModel` for consistent input/output validation and response schemas
+
+- **Request Validation:**
+  - Define explicit Pydantic models for all request bodies
+  - Use `Field()` with validation constraints (`min_length`, `max_length`, `ge`, `le`, `pattern`, etc.)
+  - Use custom validators with `@field_validator` and `@model_validator` for complex rules
+
+- **Response Schemas:**
+  - Define explicit Pydantic models for all API responses
+  - Use `model_config = ConfigDict(from_attributes=True)` for ORM compatibility
+  - Use separate models for create, update, and read operations (e.g., `UserCreate`, `UserUpdate`, `UserRead`)
+
+- **Serialization & Deserialization:**
+  - Optimize data serialization and deserialization with Pydantic's built-in methods
+  - Use `.model_dump()` and `.model_validate()` (v2 API) instead of `.dict()` and `.parse_obj()` (v1)
+  - Use `model_dump(exclude_unset=True)` for partial updates
+
+- **RORO Pattern Integration:**
+  - Accept Pydantic models as function parameters (Receive an Object)
+  - Return Pydantic models from functions (Return an Object)
+
+- **Best Practices:**
+  - Use `Annotated` types with `Field` for reusable field definitions
+  - Use `Enum` classes for fixed sets of values
+  - Keep models close to the domain they represent
+  - Use model inheritance sparingly — prefer composition

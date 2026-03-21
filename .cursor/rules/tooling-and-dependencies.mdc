@@ -1,0 +1,45 @@
+---
+description: Development tooling standards including dependency management (uv), code formatting (Ruff), containerization, and environment management.
+globs: **/pyproject.toml, **/*.py, **/Dockerfile, **/docker-compose*.yml
+alwaysApply: true
+---
+
+- **Dependency Management:** Use `uv` as the primary dependency manager
+  - Prefer `uv` over `pip`, `poetry`, or `pipenv` for speed and reliability
+  - Define all dependencies in `pyproject.toml`
+  - Pin dependency versions for reproducible builds
+  - Separate dev dependencies from production dependencies
+  - Stick to the current architecture choices in `pyproject.toml` unless the user explicitly suggests a new method or module
+
+- **Code Formatting & Linting:** Use `Ruff` as the unified tool
+  - Ruff replaces `black`, `isort`, `flake8`, and `pyflakes`
+  - Configure Ruff rules in `pyproject.toml` under `[tool.ruff]`
+  - Run formatting on save; enforce in CI
+  - Use Ruff's import sorting to maintain consistent import order
+
+- **Environment Management:**
+  - Use `venv` or `conda` for Python environment isolation
+  - Document the required Python version in `pyproject.toml` (`requires-python`)
+  - Include a `.python-version` file for tools like `pyenv`
+
+- **Containerization:**
+  - Use `Docker` and `docker-compose` for consistent development and deployment environments
+  - Use multi-stage builds to minimize image size
+  - Pin base image versions (e.g., `python:3.12-slim`)
+  - Never include secrets in Docker images — use environment variables or secret managers
+  - Include a `.dockerignore` to exclude unnecessary files
+
+- **Version Control:**
+  - Use `git` for all source control
+  - Use `git-lfs` for large binary files (models, datasets)
+  - Write meaningful commit messages following conventional commit format
+  - Use `.gitignore` to exclude generated files, caches, and environments
+
+- **Pre-commit Hooks:**
+  - Use `pre-commit` framework with hooks for Ruff, type checking, and tests
+  - Run hooks automatically on commit to catch issues early
+
+- **CI/CD:**
+  - Run linting, type checking, and tests in CI pipelines
+  - Enforce coverage thresholds in CI
+  - Automate deployment with Docker-based pipelines

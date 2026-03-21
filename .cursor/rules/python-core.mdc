@@ -1,0 +1,61 @@
+---
+description: Core Python coding style, naming conventions, paradigms, and language version requirements for all Python files.
+globs: **/*.py
+alwaysApply: true
+---
+
+- **Python Version:** Target Python 3.12+ and actively leverage modern features
+  - Use `match` statements instead of long `if/elif` chains where appropriate
+  - Use `type` aliases (PEP 695) for complex type definitions
+  - Use `X | Y` union syntax instead of `Union[X, Y]`
+  - Use `int | None` instead of `Optional[int]`
+  - Use `@override` decorator from `typing` when overriding parent methods
+  - Use f-strings (including the `=` debugging specifier) over `.format()` or `%`
+  - Use structural pattern matching for complex dispatch logic
+  - Use `ExceptionGroup` and `except*` for concurrent error handling where applicable
+
+- **PEP 8 Compliance:** Adhere strictly to PEP 8 guidelines for code style
+  - Ruff is the primary linter and formatter (see [tooling-and-dependencies.mdc](mdc:.cursor/rules/tooling-and-dependencies.mdc))
+
+- **Zen of Python:** Keep the Zen of Python in mind when making design decisions
+  - Explicit over implicit: favor code that clearly communicates its intent
+  - Simple is better than complex; complex is better than complicated
+  - Readability counts
+
+- **Functional & Declarative Style:**
+  - Prefer functional, declarative programming for route handlers and stateless utilities
+  - Use `def` for pure synchronous functions; `async def` for I/O-bound operations
+  - Prefer iteration and modularization over code duplication
+  - Favor composition over inheritance
+  - Use classes for domain models, Pydantic schemas, and services that manage state
+  - Avoid classes where a plain function suffices (especially for route handlers)
+
+- **Naming Conventions:**
+  - Use descriptive variable names with auxiliary verbs: `is_active`, `has_permission`, `should_retry`, `can_access`
+  - Use `snake_case` for all variables, functions, methods, modules, and directories
+  - Use `PascalCase` for classes and type aliases
+  - Use `SCREAMING_SNAKE_CASE` for constants
+  - Use lowercase with underscores for directories and files (e.g., `routers/user_routes.py`)
+  - Use semantic naming that reveals intent — names should explain *what* and *why*, not *how*
+
+- **RORO Pattern:** Use the Receive an Object, Return an Object pattern
+  - Accept Pydantic models or dataclasses as input parameters
+  - Return Pydantic models or typed dictionaries as output
+  - Avoid positional-argument-heavy function signatures
+
+- **Conditional Style:**
+  - Use concise, one-line syntax for simple conditionals: `if condition: do_something()`
+  - Avoid unnecessary nesting; use early returns to reduce indentation
+  - Use guard clauses at the top of functions for precondition checks
+
+- **Imports:**
+  - Group imports: stdlib, third-party, local — separated by blank lines
+  - Prefer absolute imports over relative imports
+  - Favor named exports for routes and utility functions
+
+- **Module Design:**
+  - Each module/file should have a well-defined, single responsibility
+  - Organize code into logical packages and modules
+  - File structure convention: exported router, sub-routes, utilities, static content, types (models, schemas)
+  - Favor modularity, but avoid over-modularization
+  - Do not over-engineer solutions — strive for simplicity and maintainability while being efficient

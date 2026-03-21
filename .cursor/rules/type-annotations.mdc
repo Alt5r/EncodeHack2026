@@ -1,0 +1,45 @@
+---
+description: Strict type annotation requirements using the typing module for all Python functions, methods, and class members.
+globs: **/*.py
+alwaysApply: true
+---
+
+- **Mandatory Type Annotations:**
+  - All functions, methods, and class members must have type annotations
+  - Use the most specific types possible — avoid `Any` unless absolutely necessary
+  - Type all function parameters and return values without exception
+
+- **Modern Type Syntax (Python 3.12+):**
+  - Use `X | Y` instead of `Union[X, Y]`
+  - Use `X | None` instead of `Optional[X]`
+  - Use built-in generics: `list[str]`, `dict[str, int]`, `tuple[int, ...]` instead of `List`, `Dict`, `Tuple` from `typing`
+  - Use `type` statement for type aliases (PEP 695):
+  ```python
+  # ✅ DO: Modern Python 3.12+ syntax
+  type UserId = int
+  type Coordinate = tuple[float, float]
+  def get_user(user_id: int) -> User | None: ...
+
+  # ❌ DON'T: Legacy typing imports
+  from typing import Optional, Union, List
+  def get_user(user_id: int) -> Optional[User]: ...
+  ```
+
+- **`typing` Module Usage:**
+  - Use `TypeVar`, `Generic`, `Protocol` for generic and structural typing
+  - Use `TypedDict` for typed dictionary shapes
+  - Use `Literal` for fixed string/int value types
+  - Use `Callable` for function type signatures
+  - Use `Annotated` for combining types with metadata (e.g., FastAPI's `Annotated[str, Query()]`)
+  - Use `Self` (Python 3.11+) for methods returning the same class type
+  - Use `Never` for functions that never return
+  - Use `@overload` to provide precise signatures for functions with varying parameter types
+
+- **Return Type Annotations:**
+  - Always annotate return types, including `-> None` for void functions
+  - Use `-> NoReturn` for functions that always raise exceptions
+  - Use specific return types over vague ones (e.g., `-> list[User]` not `-> list`)
+
+- **Variable Annotations:**
+  - Annotate class-level variables and module-level constants
+  - Use annotations for complex variable types that aren't immediately obvious from context

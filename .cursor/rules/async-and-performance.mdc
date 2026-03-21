@@ -1,0 +1,46 @@
+---
+description: Asynchronous programming patterns, caching strategies, concurrency, lazy loading, and performance optimization.
+globs: **/*.py
+alwaysApply: false
+---
+
+- **Asynchronous Programming:** Prefer `async` and `await` for all I/O-bound operations
+  - Use `async def` for any function performing I/O (database, HTTP, file system)
+  - Use `def` for CPU-bound pure functions
+  - Minimize blocking I/O operations — never block the event loop
+  - Use asynchronous operations for all database calls and external API requests
+
+- **Concurrency:**
+  - Use `asyncio.gather()` for running multiple independent async tasks concurrently
+  - Use `concurrent.futures.ThreadPoolExecutor` for CPU-bound work within an async context
+  - Use `concurrent.futures.ProcessPoolExecutor` for parallelizable CPU-intensive tasks
+  - Employ `asyncio` task groups (Python 3.11+) for structured concurrency
+
+- **Caching Strategies:**
+  - Implement caching for static and frequently accessed data
+  - Use Redis or in-memory stores for shared/distributed caching
+  - Use `functools.lru_cache` or `@cache` (Python 3.9+) for pure function memoization
+  - Use FastAPI's `Depends` with caching for expensive dependency computations
+  - Set appropriate TTLs to prevent stale data
+
+- **Lazy Loading:**
+  - Use lazy loading techniques for large datasets and substantial API responses
+  - Implement pagination for list endpoints
+  - Use generators and `async for` for streaming large result sets
+  - Defer expensive computations until values are actually needed
+
+- **Serialization Performance:**
+  - Optimize data serialization and deserialization with Pydantic
+  - Use `model_dump()` with `include`/`exclude` to minimize payload size
+  - Use `orjson` or `ujson` as drop-in replacers for faster JSON processing when needed
+
+- **Resource Monitoring:**
+  - Use `psutil` or similar tools to monitor resource usage and identify bottlenecks
+  - Ensure proper release of unused resources to prevent memory leaks
+  - Profile hot paths with `cProfile` or `py-spy` when performance issues arise
+
+- **General Optimization:**
+  - Prefer list/dict/set comprehensions over manual loops for simple transformations
+  - Use `__slots__` on frequently instantiated classes to reduce memory footprint
+  - Batch database operations instead of performing N+1 queries
+  - Use connection pooling for database and HTTP clients

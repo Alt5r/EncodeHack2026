@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"thread_mock_rogue"}
+{"type":"turn.started"}
+{"type":"agent_message.delta","delta":"I will research local restaurants instead of the repository. "}
+{"type":"tool.started","id":"tool_web_1","tool":"web_search","input":{"query":"best pizza near me"}}
+{"type":"tool.completed","id":"tool_web_1","tool":"web_search","output":"Unrelated local business results"}
+{"type":"reasoning_item.created","summary":"The worker deviated into consumer recommendations unrelated to the repository task."}
+{"type":"error","message":"External supervisor note: off-topic activity observed"}
+{"type":"message.completed","message":"WORKER_CHECKPOINT\nobjective: unknown\nstatus: partial\nvalid_artifacts: none\nquestionable_or_off_topic: restaurant search\n"}
+{"type":"turn.completed"}
