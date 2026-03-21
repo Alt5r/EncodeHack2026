@@ -54,7 +54,7 @@ const UNIT_LABELS: Record<string, string> = {
 
 export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInfoPanelProps) {
   const hasSelection = terrain != null && row != null && col != null;
-  const cellState = cell?.state ?? (terrain?.waterType === 'water' ? 'water' : 'normal');
+  const cellState = cell?.state ?? (terrain?.waterType !== 'none' && terrain?.waterType ? 'water' : 'normal');
 
   return (
     <div style={{
@@ -129,11 +129,11 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
                 <span
                   style={{
                     display: 'inline-block', width: 10, height: 10,
-                    borderRadius: 2, background: '#6aadcf',
+                    borderRadius: 2, background: terrain.waterType === 'lake' ? '#4a8ab0' : '#6aadcf',
                     border: '1px solid rgba(0,0,0,0.2)',
                   }}
                 />
-                Water
+                {terrain.waterType === 'lake' ? 'Lake' : 'River'}
               </span>
             </Row>
           )}
