@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/* Base                                                                 */
+/* ------------------------------------------------------------------ */
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #0a0800;
+  color: #e8d5b0;
+  font-family: 'Courier New', Courier, monospace;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scrollbar                                                            */
+/* ------------------------------------------------------------------ */
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #3a2010; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #6a4020; }
+
+/* ------------------------------------------------------------------ */
+/* Keyframe animations                                                  */
+/* ------------------------------------------------------------------ */
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in-slow {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes ember-rise {
+  0%   { transform: translateY(0)     translateX(0px)   scale(1);   opacity: 0.9; }
+  40%  { transform: translateY(-25vh) translateX(12px)  scale(0.7); opacity: 0.6; }
+  70%  { transform: translateY(-50vh) translateX(-6px)  scale(0.5); opacity: 0.25; }
+  100% { transform: translateY(-80vh) translateX(8px)   scale(0.2); opacity: 0; }
+}
+
+@keyframes wave-a {
+  0%, 100% { height: 3px;  }
+  50%       { height: 12px; }
+}
+@keyframes wave-b {
+  0%, 100% { height: 8px;  }
+  50%       { height: 2px;  }
+}
+@keyframes wave-c {
+  0%, 100% { height: 5px;  }
+  50%       { height: 14px; }
+}
+@keyframes wave-d {
+  0%, 100% { height: 10px; }
+  50%       { height: 3px;  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(255, 69, 0, 0.4); }
+  50%       { box-shadow: 0 0 20px rgba(255, 120, 0, 0.7); }
+}
+
+@keyframes title-glow {
+  0%, 100% { text-shadow: 0 0 20px rgba(255,179,71,0.5), 0 0 40px rgba(255,100,0,0.2); }
+  50%       { text-shadow: 0 0 30px rgba(255,179,71,0.8), 0 0 60px rgba(255,120,0,0.4); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Utility classes                                                      */
+/* ------------------------------------------------------------------ */
+
+.animate-blink      { animation: blink 1s step-end infinite; }
+.animate-fade-in    { animation: fade-in 0.35s ease-out both; }
+.animate-fade-in-slow { animation: fade-in-slow 1.2s ease-out both; }
+.glow-amber         { animation: title-glow 3s ease-in-out infinite; }
+.glow-fire          { text-shadow: 0 0 12px rgba(255,69,0,0.8); }
+.pulse-fire         { animation: pulse-glow 2s ease-in-out infinite; }
+
+/* Scanline overlay */
+.scanlines {
+  position: relative;
+}
+.scanlines::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    rgba(0, 0, 0, 0.12) 3px,
+    rgba(0, 0, 0, 0.12) 4px
+  );
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* CRT vignette */
+.vignette::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.6) 100%);
+  pointer-events: none;
+  z-index: 5;
+}

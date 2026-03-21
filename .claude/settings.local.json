@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(pip show:*)",
+      "Bash(.venv/bin/uvicorn watchtower_backend.main:app --host 0.0.0.0 --port 8000)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/api/v1/health)",
+      "Bash(pkill -f \"uvicorn watchtower_backend\")"
+    ]
+  }
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -28,6 +29,13 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
         lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     settings.audio_directory.mkdir(parents=True, exist_ok=True)
     app.mount("/media/audio", StaticFiles(directory=settings.audio_directory), name="audio")
