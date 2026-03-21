@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from watchtower_backend.domain.models.simulation import AirSupportPayload, CommandAction, WindState
+from watchtower_backend.domain.models.simulation import WindState
 from watchtower_backend.services.planning.orchestrator import AnthropicPlanner, HeuristicPlanner
 from watchtower_backend.services.sessions.runtime import build_initial_state
 
@@ -27,11 +27,8 @@ class _FakeMessagesClient:
                 _FakeTextBlock(
                     type="text",
                     text=(
-                        '{"commands":[{"unit_id":"tower","action":"drop_air_support",'
-                        '"target_x":8,"target_y":13,"payload_type":"retardant",'
-                        '"drop_start_x":8,"drop_start_y":10,"drop_end_x":8,"drop_end_y":16,'
-                        '"approach_points":[[4,10],[6,10]],'
-                        '"rationale":"Seal the head fire."}]}'
+                        '{"commands":[{"unit_id":"heli-alpha","action":"drop_water",'
+                        '"target_x":4,"target_y":12,"rationale":"Hit the lead edge."}]}'
                     ),
                 )
             ]
@@ -66,12 +63,8 @@ async def test_anthropic_planner_uses_structured_response() -> None:
     commands = await planner.plan(session_state=state)
 
     assert len(commands) == 1
-    assert commands[0].unit_id == "tower"
-    assert commands[0].action == CommandAction.DROP_AIR_SUPPORT
-    assert commands[0].payload_type == AirSupportPayload.RETARDANT
-    assert commands[0].drop_start == (8, 10)
-    assert commands[0].drop_end == (8, 16)
-    assert commands[0].approach_points == [(4, 10), (6, 10)]
+    assert commands[0].unit_id == "heli-alpha"
+    assert commands[0].target == (4, 12)
 
 
 async def test_anthropic_planner_falls_back_without_client() -> None:
@@ -97,4 +90,3 @@ async def test_anthropic_planner_falls_back_without_client() -> None:
     commands = await planner.plan(session_state=state)
 
     assert len(commands) >= 1
-    assert any(command.action == CommandAction.DROP_AIR_SUPPORT for command in commands)

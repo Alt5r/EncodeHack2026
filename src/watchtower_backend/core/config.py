@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     planner_model: str = Field(default="claude-3-5-haiku-latest")
     planner_timeout_seconds: float = Field(default=12.0, gt=0.0, le=60.0)
     planner_max_tokens: int = Field(default=800, ge=100, le=4000)
+    planner_orchestrator_model: str = Field(default="claude-3-5-sonnet-20241022")
+    planner_subagent_model: str = Field(default="claude-3-5-haiku-20241022")
+    planner_orchestrator_max_tokens: int | None = Field(default=None)
+    planner_subagent_max_tokens: int | None = Field(default=None)
+    planner_graph_invoke_timeout_seconds: float = Field(default=120.0, gt=0.0, le=600.0)
     anthropic_api_key: str | None = Field(
         default=None,
         validation_alias=AliasChoices(

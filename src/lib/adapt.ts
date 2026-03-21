@@ -11,6 +11,12 @@ import type { AirSupportMission, SessionState, Cell, TreatedCell, Unit, RawSessi
  * - Units:       orchestrator filtered out, unit_type → type, position → {row, col}
  */
 export function adaptSessionState(raw: RawSessionState): SessionState {
+  const burnedCells = raw.burned_cells ?? [];
+  const suppressedCells = raw.suppressed_cells ?? [];
+  const firebreakCells = raw.firebreak_cells ?? [];
+  const rawAirSupportMissions = raw.air_support_missions ?? [];
+  const rawTreatedCells = raw.treated_cells ?? [];
+
   // ── Status mapping ──
   let status: SessionState['status'];
   switch (raw.status) {
@@ -42,19 +48,19 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
       fuel: 0.8,
       moisture: 0.1,
     })),
-    ...raw.burned_cells.map((c): Cell => ({
+    ...burnedCells.map((c): Cell => ({
       ...toRowCol(c),
       state: 'burned',
       fuel: 0.0,
       moisture: 0.0,
     })),
-    ...raw.suppressed_cells.map((c): Cell => ({
+    ...suppressedCells.map((c): Cell => ({
       ...toRowCol(c),
       state: 'suppressed',
       fuel: 0.3,
       moisture: 0.9,
     })),
-    ...raw.firebreak_cells.map((c): Cell => ({
+    ...firebreakCells.map((c): Cell => ({
       ...toRowCol(c),
       state: 'firebreak',
       fuel: 0.0,
@@ -77,7 +83,7 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
       status_text: u.status_text,
     }));
 
-  const airSupportMissions: AirSupportMission[] = raw.air_support_missions.map((mission) => ({
+  const airSupportMissions: AirSupportMission[] = rawAirSupportMissions.map((mission) => ({
     id: mission.id,
     aircraftModel: mission.aircraft_model,
     payloadType: mission.payload_type,
@@ -89,7 +95,7 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
     progress: mission.progress,
   }));
 
-  const treatedCells: TreatedCell[] = raw.treated_cells.map((cell) => ({
+  const treatedCells: TreatedCell[] = rawTreatedCells.map((cell) => ({
     ...toRowCol(cell.coordinate),
     payloadType: cell.payload_type,
     strength: cell.strength,

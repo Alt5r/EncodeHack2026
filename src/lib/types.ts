@@ -1,5 +1,14 @@
 /** Cell states matching the backend grid model */
-export type CellState = 'normal' | 'fire' | 'burned' | 'suppressed' | 'firebreak' | 'village' | 'water';
+export type CellState =
+  | 'normal'
+  | 'fire'
+  | 'burned'
+  | 'suppressed'
+  | 'firebreak'
+  | 'village'
+  | 'water'
+  | 'river'
+  | 'lake';
 
 /** A single cell in the 32×32 grid */
 export interface Cell {
@@ -150,11 +159,11 @@ export interface RawSessionState {
   village: RawVillageState;
   units: RawUnitState[];
   fire_cells: Coordinate[];
-  burned_cells: Coordinate[];
-  suppressed_cells: Coordinate[];
-  firebreak_cells: Coordinate[];
-  air_support_missions: RawAirSupportMission[];
-  treated_cells: RawTreatedCellState[];
+  burned_cells?: Coordinate[];
+  suppressed_cells?: Coordinate[];
+  firebreak_cells?: Coordinate[];
+  air_support_missions?: RawAirSupportMission[];
+  treated_cells?: RawTreatedCellState[];
   score: ScoreSummary;
   winner: string | null;
   version: number;

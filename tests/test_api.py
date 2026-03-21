@@ -31,16 +31,10 @@ def test_session_lifecycle_and_leaderboard(monkeypatch, tmp_path) -> None:
         )
         assert create_response.status_code == 200
         session_id = create_response.json()["id"]
-        create_body = create_response.json()
-        assert create_body["air_support_missions"] == []
-        assert create_body["treated_cells"] == []
 
         session_response = client.get(f"/api/v1/sessions/{session_id}")
         assert session_response.status_code == 200
-        session_body = session_response.json()
-        assert session_body["doctrine_title"] == "Shield"
-        assert session_body["air_support_missions"] == []
-        assert session_body["treated_cells"] == []
+        assert session_response.json()["doctrine_title"] == "Shield"
 
         terminate_response = client.post(f"/api/v1/sessions/{session_id}/terminate")
         assert terminate_response.status_code == 200

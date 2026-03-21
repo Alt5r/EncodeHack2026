@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -28,6 +29,8 @@ from watchtower_backend.services.simulation.engine import SimulationEngine
 
 logger = logging.getLogger(__name__)
 
+type SessionEventListener = Callable[[SessionEvent], Awaitable[None]]
+
 
 class SessionRuntime:
     """Own the active runtime for one WATCHTOWER session."""
@@ -43,6 +46,7 @@ class SessionRuntime:
         max_event_backlog: int,
         seed: int,
         terrain_grid: list[list[TerrainCell]] | None = None,
+        session_event_listener: SessionEventListener | None = None,
     ) -> None:
         """Initialize the session runtime.
 
@@ -56,6 +60,7 @@ class SessionRuntime:
             max_event_backlog: Per-subscriber queue size.
             seed: Seed for deterministic simulation behavior.
             terrain_grid: Optional terrain grid from the frontend.
+            session_event_listener: Optional async hook after each session event is recorded.
         """
         self._session_state = session_state
         self._planner = planner
@@ -69,6 +74,7 @@ class SessionRuntime:
         self._broadcaster = SessionBroadcaster(max_backlog=max_event_backlog)
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._session_event_listener = session_event_listener
 
     @property
     def session_state(self) -> SessionState:
@@ -158,7 +164,8 @@ class SessionRuntime:
                     session_state=self._session_state.model_copy(deep=True)
                 )
                 last_plan_at = now
-                await self._emit_planner_messages(commands=commands)
+                if getattr(self._planner, "bundles_command_radio", True):
+                    await self._emit_planner_messages(commands=commands)
 
             try:
                 mutations = self._engine.step(commands=commands)
@@ -224,6 +231,8 @@ class SessionRuntime:
         )
         await self._broadcaster.publish_event(event=event)
         await self._replay_store.append(event=event)
+        if self._session_event_listener is not None:
+            await self._session_event_listener(event)
 
     async def _emit_snapshot(self) -> None:
         """Broadcast the latest session snapshot."""
