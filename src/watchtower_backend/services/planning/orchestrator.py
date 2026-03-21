@@ -9,7 +9,12 @@ import orjson
 from anthropic import AsyncAnthropic
 
 from watchtower_backend.domain.commands import UnitCommand
-from watchtower_backend.domain.models.simulation import CommandAction, SessionState, UnitType
+from watchtower_backend.domain.models.simulation import (
+    AirSupportPayload,
+    CommandAction,
+    SessionState,
+    UnitType,
+)
 from watchtower_backend.services.planning.prompts import build_planner_prompt
 from watchtower_backend.services.planning.schemas import PlannerResponse
 
@@ -43,6 +48,20 @@ class HeuristicPlanner:
             key=lambda cell: abs(cell[0] - village_x) + abs(cell[1] - village_y),
         )
         priority_fire = sorted_fire[0]
+        if not session_state.air_support_missions:
+            commands.append(
+                UnitCommand(
+                    session_id=session_state.id,
+                    unit_id="tower",
+                    action=CommandAction.DROP_AIR_SUPPORT,
+                    target=priority_fire,
+                    payload_type=self._select_air_support_payload(
+                        fire_count=len(session_state.fire_cells)
+                    ),
+                    rationale="Lay a fixed-wing support line over the main fire edge.",
+                    state_version=session_state.version,
+                )
+            )
 
         for unit in session_state.units:
             if unit.unit_type is UnitType.ORCHESTRATOR:
@@ -74,6 +93,12 @@ class HeuristicPlanner:
                 return CommandAction.CREATE_FIREBREAK
             case _:
                 return CommandAction.HOLD_POSITION
+
+    def _select_air_support_payload(self, fire_count: int) -> AirSupportPayload:
+        """Choose a simple payload heuristic for fixed-wing support."""
+        if fire_count <= 4:
+            return AirSupportPayload.WATER
+        return AirSupportPayload.RETARDANT
 
 
 class AnthropicPlanner:
@@ -181,12 +206,13 @@ def _convert_planner_response(
     Returns:
         Validated unit commands.
     """
-    valid_units = {
-        unit.id for unit in session_state.units if unit.unit_type is not UnitType.ORCHESTRATOR
-    }
+    unit_types = {unit.id: unit.unit_type for unit in session_state.units}
     commands: list[UnitCommand] = []
     for planner_command in planner_response.commands:
-        if planner_command.unit_id not in valid_units:
+        unit_type = unit_types.get(planner_command.unit_id)
+        if unit_type is None:
+            continue
+        if unit_type is UnitType.ORCHESTRATOR and planner_command.action is not CommandAction.DROP_AIR_SUPPORT:
             continue
         commands.append(
             UnitCommand(
@@ -194,6 +220,18 @@ def _convert_planner_response(
                 unit_id=planner_command.unit_id,
                 action=planner_command.action,
                 target=(planner_command.target_x, planner_command.target_y),
+                payload_type=planner_command.payload_type,
+                approach_points=list(planner_command.approach_points),
+                drop_start=(
+                    (planner_command.drop_start_x, planner_command.drop_start_y)
+                    if planner_command.drop_start_x is not None and planner_command.drop_start_y is not None
+                    else None
+                ),
+                drop_end=(
+                    (planner_command.drop_end_x, planner_command.drop_end_y)
+                    if planner_command.drop_end_x is not None and planner_command.drop_end_y is not None
+                    else None
+                ),
                 rationale=planner_command.rationale,
                 state_version=session_state.version,
             )

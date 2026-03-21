@@ -74,4 +74,6 @@ export const MOCK_STATE: SessionState = {
     firebreak_cells: 3,
     village_damage: 0,
   },
+  airSupportMissions: [],
+  treatedCells: [],
 };

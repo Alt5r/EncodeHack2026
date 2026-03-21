@@ -10,6 +10,11 @@ export interface Cell {
   moisture: number;     // 0–1
 }
 
+export interface GridCoordinate {
+  row: number;
+  col: number;
+}
+
 /** Wind conditions */
 export interface Wind {
   direction: string;   // compass: "N", "NE", "E", etc.
@@ -25,6 +30,38 @@ export interface Village {
 
 /** Unit types (matches backend UnitType enum) */
 export type UnitType = 'helicopter' | 'ground_crew';
+
+export type AircraftModel =
+  | 'P2V'
+  | 'HC-130H'
+  | 'BAe-146'
+  | 'MD-87'
+  | 'C-130Q'
+  | 'RJ85'
+  | 'C-130 H & J';
+
+export type AirSupportPayload = 'water' | 'retardant';
+export type AirSupportPhase = 'approach' | 'drop' | 'exit' | 'complete';
+
+export interface TreatedCell {
+  row: number;
+  col: number;
+  payloadType: AirSupportPayload;
+  strength: number;
+  remainingTicks: number;
+}
+
+export interface AirSupportMission {
+  id: string;
+  aircraftModel: AircraftModel;
+  payloadType: AirSupportPayload;
+  approachPoints: GridCoordinate[];
+  dropStart: GridCoordinate;
+  dropEnd: GridCoordinate;
+  exitPoints: GridCoordinate[];
+  phase: AirSupportPhase;
+  progress: number;
+}
 
 /** A unit on the map */
 export interface Unit {
@@ -59,6 +96,8 @@ export interface SessionState {
   villages: Village[];
   wind: Wind;
   score: ScoreSummary;
+  airSupportMissions: AirSupportMission[];
+  treatedCells: TreatedCell[];
 }
 
 // ── Raw backend types (what the WebSocket/API actually sends) ──
@@ -83,6 +122,25 @@ export interface RawVillageState {
   is_intact: boolean;
 }
 
+export interface RawTreatedCellState {
+  coordinate: Coordinate;
+  payload_type: AirSupportPayload;
+  strength: number;
+  remaining_ticks: number;
+}
+
+export interface RawAirSupportMission {
+  id: string;
+  aircraft_model: AircraftModel;
+  payload_type: AirSupportPayload;
+  approach_points: Coordinate[];
+  drop_start: Coordinate;
+  drop_end: Coordinate;
+  exit_points: Coordinate[];
+  phase: AirSupportPhase;
+  progress: number;
+}
+
 export interface RawSessionState {
   id: string;
   status: 'pending' | 'running' | 'won' | 'lost' | 'terminated';
@@ -95,6 +153,8 @@ export interface RawSessionState {
   burned_cells: Coordinate[];
   suppressed_cells: Coordinate[];
   firebreak_cells: Coordinate[];
+  air_support_missions: RawAirSupportMission[];
+  treated_cells: RawTreatedCellState[];
   score: ScoreSummary;
   winner: string | null;
   version: number;

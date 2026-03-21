@@ -1,5 +1,11 @@
+import {
+  buildDropCorridor,
+  buildFallbackAirSupportMission,
+  getMissionProgressPerSecond,
+  PAYLOAD_SETTINGS,
+} from './air-support';
 import type { SessionTerrainCellData } from './cell-info';
-import type { Cell, ScoreSummary, SessionState } from './types';
+import type { AirSupportMission, Cell, ScoreSummary, SessionState, TreatedCell } from './types';
 
 const NEIGHBOURS: Array<{ dr: number; dc: number; diagonal: boolean }> = [
   { dr: 1, dc: 0, diagonal: false },
@@ -61,7 +67,16 @@ function buildVillageSet(state: SessionState): Set<string> {
   return cells;
 }
 
-function getMoisture(row: number, col: number, terrainGrid: SessionTerrainCellData[][]): number {
+function getTreatedCell(row: number, col: number, state: SessionState): TreatedCell | undefined {
+  return state.treatedCells.find((cell) => cell.row === row && cell.col === col);
+}
+
+function getMoisture(
+  row: number,
+  col: number,
+  terrainGrid: SessionTerrainCellData[][],
+  state: SessionState,
+): number {
   if (terrainGrid[row][col].water !== 'none') return 1;
 
   for (let radius = 1; radius <= 2; radius++) {
@@ -78,7 +93,9 @@ function getMoisture(row: number, col: number, terrainGrid: SessionTerrainCellDa
     }
   }
 
-  return 0.3;
+  const treated = getTreatedCell(row, col, state);
+  if (!treated) return 0.3;
+  return Math.min(1, 0.3 + PAYLOAD_SETTINGS[treated.payloadType].moistureBoost * treated.strength);
 }
 
 function computeSpreadProbability(
@@ -86,6 +103,7 @@ function computeSpreadProbability(
   targetRow: number,
   targetCol: number,
   terrainGrid: SessionTerrainCellData[][],
+  state: SessionState,
   windDirection: string,
   windSpeed: number,
   diagonal: boolean,
@@ -102,7 +120,11 @@ function computeSpreadProbability(
 
   const slopeDelta = targetTerrain.elevation - sourceTerrain.elevation;
   const slopeFactor = Math.max(0.35, Math.min(2.4, 1 + slopeDelta * 5));
-  const moistureFactor = 1 - getMoisture(targetRow, targetCol, terrainGrid) * 0.75;
+  const moistureFactor = 1 - getMoisture(targetRow, targetCol, terrainGrid, state) * 0.75;
+  const treated = getTreatedCell(targetRow, targetCol, state);
+  const treatmentFactor = treated
+    ? Math.max(0.2, 1 - PAYLOAD_SETTINGS[treated.payloadType].spreadReduction * treated.strength)
+    : 1;
   const diagonalFactor = diagonal ? 0.72 : 1;
   const fuelFactor = 0.55 + source.fuel * 0.8;
 
@@ -112,6 +134,7 @@ function computeSpreadProbability(
     windFactor *
     slopeFactor *
     moistureFactor *
+    treatmentFactor *
     diagonalFactor *
     fuelFactor;
 
@@ -135,6 +158,167 @@ function naturalBurnoutUnlocked(state: SessionState): boolean {
   return state.cells.some((cell) => cell.state === 'suppressed');
 }
 
+function decayTreatedCells(treatedCells: TreatedCell[]): TreatedCell[] {
+  return treatedCells
+    .map((cell) => ({
+      ...cell,
+      remainingTicks: cell.remainingTicks - 1,
+      strength: Math.max(
+        0.15,
+        cell.strength * (cell.payloadType === 'retardant' ? 0.96 : 0.9),
+      ),
+    }))
+    .filter((cell) => cell.remainingTicks > 0);
+}
+
+function mergeTreatedCells(existing: TreatedCell[], incoming: TreatedCell[]): TreatedCell[] {
+  const map = new Map<string, TreatedCell>();
+  for (const cell of existing) {
+    map.set(coordinateKey(cell.row, cell.col), cell);
+  }
+  for (const cell of incoming) {
+    const key = coordinateKey(cell.row, cell.col);
+    const current = map.get(key);
+    if (!current) {
+      map.set(key, cell);
+      continue;
+    }
+    map.set(key, {
+      row: cell.row,
+      col: cell.col,
+      payloadType:
+        PAYLOAD_SETTINGS[cell.payloadType].durationTicks >= PAYLOAD_SETTINGS[current.payloadType].durationTicks
+          ? cell.payloadType
+          : current.payloadType,
+      strength: Math.max(cell.strength, current.strength),
+      remainingTicks: Math.max(cell.remainingTicks, current.remainingTicks),
+    });
+  }
+  return [...map.values()];
+}
+
+function applyAirSupportDrop(
+  state: SessionState,
+  mission: AirSupportMission,
+  terrainGrid: SessionTerrainCellData[][],
+  seed: number,
+): SessionState {
+  const corridor = buildDropCorridor(mission.dropStart, mission.dropEnd, state.grid_size, 1);
+  const fireMap = new Map(
+    state.cells
+      .filter((cell) => cell.state === 'fire')
+      .map((cell) => [coordinateKey(cell.row, cell.col), cell]),
+  );
+  const nonFireCells = state.cells.filter((cell) => cell.state !== 'fire');
+  const suppressedCells: Cell[] = [];
+  const nextFire: Cell[] = [];
+  const treatedCells: TreatedCell[] = [];
+
+  for (const cell of corridor) {
+    if (terrainGrid[cell.row][cell.col].water === 'none') {
+      treatedCells.push({
+        row: cell.row,
+        col: cell.col,
+        payloadType: mission.payloadType,
+        strength: mission.payloadType === 'retardant' ? 1 : 0.9,
+        remainingTicks: PAYLOAD_SETTINGS[mission.payloadType].durationTicks,
+      });
+    }
+
+    const key = coordinateKey(cell.row, cell.col);
+    const fireCell = fireMap.get(key);
+    if (!fireCell) continue;
+    const roll = randomFromSeed(seed + state.tick * 701 + cell.row * 37 + cell.col * 53);
+    if (roll < PAYLOAD_SETTINGS[mission.payloadType].directSuppressChance) {
+      suppressedCells.push({
+        ...fireCell,
+        state: 'suppressed',
+        fuel: Math.max(0.1, fireCell.fuel - 0.3),
+        moisture: 0.95,
+      });
+      fireMap.delete(key);
+      continue;
+    }
+    nextFire.push({
+      ...fireCell,
+      fuel: Math.max(0.05, fireCell.fuel - (mission.payloadType === 'retardant' ? 0.18 : 0.3)),
+      moisture: Math.max(fireCell.moisture, 0.7),
+    });
+    fireMap.delete(key);
+  }
+
+  for (const fireCell of fireMap.values()) {
+    nextFire.push(fireCell);
+  }
+
+  return {
+    ...state,
+    cells: [...nonFireCells, ...suppressedCells, ...nextFire],
+    treatedCells: mergeTreatedCells(state.treatedCells, treatedCells),
+  };
+}
+
+function advanceAirSupportMissions(
+  state: SessionState,
+  terrainGrid: SessionTerrainCellData[][],
+  seed: number,
+): SessionState {
+  let nextState: SessionState = {
+    ...state,
+    treatedCells: decayTreatedCells(state.treatedCells),
+  };
+
+  let missions = nextState.airSupportMissions;
+  const newMissionIds = new Set<string>();
+  if (missions.length === 0 && nextState.tick > 0 && nextState.tick % 6 === 0) {
+    const payloadType = nextState.cells.filter((cell) => cell.state === 'fire').length <= 4
+      ? 'water'
+      : 'retardant';
+    const generated = buildFallbackAirSupportMission(nextState, seed, payloadType);
+    if (generated) {
+      missions = [...missions, generated];
+      newMissionIds.add(generated.id);
+    }
+  }
+
+  const nextMissions: AirSupportMission[] = [];
+  for (const mission of missions) {
+    if (newMissionIds.has(mission.id)) {
+      nextMissions.push(mission);
+      continue;
+    }
+    const progress = Math.min(1, mission.progress + getMissionProgressPerSecond(mission.phase));
+    if (mission.phase === 'approach') {
+      if (progress >= 1) {
+        const dropMission: AirSupportMission = { ...mission, phase: 'drop', progress: 0 };
+        nextState = applyAirSupportDrop(nextState, dropMission, terrainGrid, seed);
+        nextMissions.push(dropMission);
+      } else {
+        nextMissions.push({ ...mission, progress });
+      }
+      continue;
+    }
+
+    if (mission.phase === 'drop') {
+      if (progress >= 1) {
+        nextMissions.push({ ...mission, phase: 'exit', progress: 0 });
+      } else {
+        nextMissions.push({ ...mission, progress });
+      }
+      continue;
+    }
+
+    if (mission.phase === 'exit' && progress < 1) {
+      nextMissions.push({ ...mission, progress });
+    }
+  }
+
+  return {
+    ...nextState,
+    airSupportMissions: nextMissions,
+  };
+}
+
 export function advanceMockSessionState(
   state: SessionState,
   terrainGrid: SessionTerrainCellData[][],
@@ -144,9 +328,11 @@ export function advanceMockSessionState(
     return state;
   }
 
-  const staticCells = state.cells.filter((cell) => cell.state !== 'fire' && cell.state !== 'burned');
-  const currentFire = state.cells.filter((cell) => cell.state === 'fire');
-  const burnedCells = state.cells.filter((cell) => cell.state === 'burned');
+  const airSupportState = advanceAirSupportMissions(state, terrainGrid, seed);
+
+  const staticCells = airSupportState.cells.filter((cell) => cell.state !== 'fire' && cell.state !== 'burned');
+  const currentFire = airSupportState.cells.filter((cell) => cell.state === 'fire');
+  const burnedCells = airSupportState.cells.filter((cell) => cell.state === 'burned');
   const occupied = new Set<string>([
     ...staticCells.map((cell) => coordinateKey(cell.row, cell.col)),
     ...burnedCells.map((cell) => coordinateKey(cell.row, cell.col)),
@@ -156,13 +342,13 @@ export function advanceMockSessionState(
   const nextFire: Cell[] = [];
   const nextBurned = [...burnedCells];
   const newKeys = new Set<string>();
-  const burnoutUnlocked = naturalBurnoutUnlocked(state);
+  const burnoutUnlocked = naturalBurnoutUnlocked(airSupportState);
 
   for (const cell of currentFire) {
     const remainingFuel = Math.max(0, cell.fuel - 0.045);
     if (remainingFuel <= 0.01) {
       if (!burnoutUnlocked) {
-        nextFire.push({ ...cell, fuel: 0.01, moisture: getMoisture(cell.row, cell.col, terrainGrid) });
+        nextFire.push({ ...cell, fuel: 0.01, moisture: getMoisture(cell.row, cell.col, terrainGrid, airSupportState) });
         continue;
       }
       nextBurned.push({ ...cell, state: 'burned', fuel: 0, moisture: 0 });
@@ -179,7 +365,7 @@ export function advanceMockSessionState(
       const row = source.row + neighbour.dr;
       const col = source.col + neighbour.dc;
 
-      if (row < 0 || col < 0 || row >= state.grid_size || col >= state.grid_size) continue;
+      if (row < 0 || col < 0 || row >= airSupportState.grid_size || col >= airSupportState.grid_size) continue;
 
       const key = coordinateKey(row, col);
       if (occupied.has(key) || newKeys.has(key)) continue;
@@ -190,12 +376,13 @@ export function advanceMockSessionState(
         row,
         col,
         terrainGrid,
-        state.wind.direction,
-        state.wind.speed_mph,
+        airSupportState,
+        airSupportState.wind.direction,
+        airSupportState.wind.speed_mph,
         neighbour.diagonal,
       );
       const roll = randomFromSeed(
-        seed + state.tick * 10007 + source.row * 431 + source.col * 863 + row * 1733 + col * 3467,
+        seed + airSupportState.tick * 10007 + source.row * 431 + source.col * 863 + row * 1733 + col * 3467,
       );
       if (roll >= probability) continue;
 
@@ -205,17 +392,17 @@ export function advanceMockSessionState(
         col,
         state: 'fire',
         fuel: VEGETATION_FUEL[terrainGrid[row][col].vegetation],
-        moisture: getMoisture(row, col, terrainGrid),
+        moisture: getMoisture(row, col, terrainGrid, airSupportState),
       });
     }
   }
 
-  const villageCells = buildVillageSet(state);
+  const villageCells = buildVillageSet(airSupportState);
   const activeVillageFire = nextFire.some((cell) => villageCells.has(coordinateKey(cell.row, cell.col)));
 
   const nextState: SessionState = {
-    ...state,
-    tick: state.tick + 1,
+    ...airSupportState,
+    tick: airSupportState.tick + 1,
     status: activeVillageFire ? 'lost' : nextFire.length === 0 && burnoutUnlocked ? 'won' : 'running',
     cells: [...staticCells, ...nextBurned, ...nextFire],
   };

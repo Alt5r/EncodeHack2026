@@ -68,7 +68,11 @@ class SessionDetail(SessionRead):
     village: dict[str, object]
     units: list[dict[str, object]]
     fire_cells: list[tuple[int, int]]
+    burned_cells: list[tuple[int, int]]
+    suppressed_cells: list[tuple[int, int]]
     firebreak_cells: list[tuple[int, int]]
+    air_support_missions: list[dict[str, object]]
+    treated_cells: list[dict[str, object]]
 
     @classmethod
     def from_state(cls, session_state: SessionState) -> SessionDetail:
@@ -79,5 +83,13 @@ class SessionDetail(SessionRead):
             village=session_state.village.model_dump(mode="json"),
             units=[unit.model_dump(mode="json") for unit in session_state.units],
             fire_cells=session_state.fire_cells,
+            burned_cells=session_state.burned_cells,
+            suppressed_cells=session_state.suppressed_cells,
             firebreak_cells=session_state.firebreak_cells,
+            air_support_missions=[
+                mission.model_dump(mode="json") for mission in session_state.air_support_missions
+            ],
+            treated_cells=[
+                treated_cell.model_dump(mode="json") for treated_cell in session_state.treated_cells
+            ],
         )

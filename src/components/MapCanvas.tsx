@@ -1,9 +1,14 @@
 'use client';
 
 import { useRef, useEffect, useCallback } from 'react';
+import {
+  AIRCRAFT_SPRITES,
+  getMissionProgressPerSecond,
+  getMissionRenderState,
+} from '@/lib/air-support';
 import { generateHeightmap, extractContours, generateVegetationImage, generateWaterFeatures, drawMapDecorations, type TerrainParams } from '@/lib/terrain';
 import { GAME_PALETTE } from '@/lib/game-palette';
-import type { SessionState, Unit, Village, Wind } from '@/lib/types';
+import type { AirSupportMission, GridCoordinate, SessionState, TreatedCell, Unit, Village, Wind } from '@/lib/types';
 
 interface MapCanvasProps {
   params: TerrainParams;
@@ -40,12 +45,19 @@ const WIND_ANGLES: Record<string, number> = {
   W: Math.PI, SW: 3 * Math.PI / 4, S: Math.PI / 2, SE: Math.PI / 4,
 };
 
+interface MissionAnimationState {
+  phase: AirSupportMission['phase'];
+  progress: number;
+  updatedAt: number;
+}
+
 export default function MapCanvas({ params, gameState, showGrid, selectedCell, onCellSelect }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const terrainCacheRef = useRef<HTMLCanvasElement | null>(null);
   const cachedSizeRef = useRef<{ w: number; h: number } | null>(null);
   const cachedSignatureRef = useRef<string | null>(null);
   const hoveredCellRef = useRef<{ row: number; col: number } | null>(null);
+  const missionAnimationRef = useRef<Map<string, MissionAnimationState>>(new Map());
 
   // Zoom & pan state (refs to avoid re-renders)
   const zoomRef = useRef(1);
@@ -340,6 +352,11 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     }
 
     // ── Cells ──
+    for (const treatedCell of state.treatedCells) {
+      drawTreatedCell(ctx, treatedCell, mapX, mapY, cellW, cellH);
+    }
+
+    // ── Cells ──
     for (const cell of state.cells) {
       const px = mapX + cell.col * cellW;
       const py = mapY + cell.row * cellH;
@@ -392,6 +409,18 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
     // ── Units ──
     for (const unit of state.units) {
       drawUnit(ctx, unit, mapX, mapY, cellW, cellH);
+    }
+
+    // ── Air support missions ──
+    for (const mission of state.airSupportMissions) {
+      const animationState = missionAnimationRef.current.get(mission.id);
+      const displayProgress = animationState
+        ? Math.min(
+          1,
+          mission.progress + ((time - animationState.updatedAt) / 1000) * getMissionProgressPerSecond(mission.phase),
+        )
+        : mission.progress;
+      drawAirSupportMission(ctx, mission, mapX, mapY, cellW, cellH, time, displayProgress);
     }
 
     // ── Hovered cell outline (subtle) ──
@@ -556,19 +585,47 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
   }, [onCellSelect, gameState, screenToMap]);
 
   useEffect(() => {
+    if (!gameState) {
+      missionAnimationRef.current.clear();
+      return;
+    }
+
+    const now = performance.now();
+    const activeMissionIds = new Set<string>();
+    for (const mission of gameState.airSupportMissions) {
+      activeMissionIds.add(mission.id);
+      const existing = missionAnimationRef.current.get(mission.id);
+      if (!existing || existing.phase !== mission.phase || existing.progress !== mission.progress) {
+        missionAnimationRef.current.set(mission.id, {
+          phase: mission.phase,
+          progress: mission.progress,
+          updatedAt: now,
+        });
+      }
+    }
+    for (const missionId of Array.from(missionAnimationRef.current.keys())) {
+      if (!activeMissionIds.has(missionId)) {
+        missionAnimationRef.current.delete(missionId);
+      }
+    }
+  }, [gameState]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const hasFire = gameState?.cells.some(c => c.state === 'fire');
+    const hasAnimatedOverlay =
+      !!gameState?.cells.some(c => c.state === 'fire') ||
+      (gameState?.airSupportMissions.length ?? 0) > 0;
     let animId: number | null = null;
 
     const redraw = () => {
-      if (hasFire) return; // animation loop handles it
+      if (hasAnimatedOverlay) return; // animation loop handles it
       draw(0);
     };
 
     // Animation loop for fire pulsing
-    if (hasFire) {
+    if (hasAnimatedOverlay) {
       const animate = (time: number) => {
         draw(time);
         animId = requestAnimationFrame(animate);
@@ -845,6 +902,23 @@ function drawVillage(
   ctx.restore();
 }
 
+function drawTreatedCell(
+  ctx: CanvasRenderingContext2D,
+  treatedCell: TreatedCell,
+  mapX: number,
+  mapY: number,
+  cellW: number,
+  cellH: number,
+) {
+  const px = mapX + treatedCell.col * cellW;
+  const py = mapY + treatedCell.row * cellH;
+  const alpha = Math.max(0.12, Math.min(0.35, treatedCell.strength * 0.28));
+  ctx.fillStyle = treatedCell.payloadType === 'retardant'
+    ? GAME_PALETTE.treatedRetardant.replace(/0\.28\)/, `${alpha.toFixed(2)})`)
+    : GAME_PALETTE.treatedWater.replace(/0\.22\)/, `${alpha.toFixed(2)})`);
+  ctx.fillRect(px, py, cellW, cellH);
+}
+
 function drawUnit(
   ctx: CanvasRenderingContext2D,
   unit: Unit,
@@ -911,6 +985,151 @@ function drawUnit(
   ctx.fillText(unit.label, cx, cy + r + 2);
 
   ctx.restore();
+}
+
+function toCanvasPoint(
+  coordinate: GridCoordinate,
+  mapX: number,
+  mapY: number,
+  cellW: number,
+  cellH: number,
+) {
+  return {
+    x: mapX + (coordinate.col + 0.5) * cellW,
+    y: mapY + (coordinate.row + 0.5) * cellH,
+  };
+}
+
+function drawAircraftSilhouette(
+  ctx: CanvasRenderingContext2D,
+  mission: AirSupportMission,
+  x: number,
+  y: number,
+  cellW: number,
+  cellH: number,
+  heading: GridCoordinate,
+) {
+  const sprite = AIRCRAFT_SPRITES[mission.aircraftModel];
+  const pixel = Math.max(2, Math.min(cellW, cellH) * 0.24);
+  const maxX = Math.max(...sprite.map(([sx]) => sx), 0);
+  const maxY = Math.max(...sprite.map(([, sy]) => sy), 0);
+  const width = (maxX + 1) * pixel;
+  const height = (maxY + 1) * pixel;
+  const angle = Math.atan2(heading.row, heading.col || 0.0001) + Math.PI;
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.translate(-width / 2, -height / 2);
+  ctx.fillStyle = GAME_PALETTE.aircraftShadow;
+  for (const [sx, sy] of sprite) {
+    ctx.fillRect(sx * pixel + pixel * 0.45, sy * pixel + pixel * 0.45, pixel, pixel);
+  }
+  ctx.fillStyle = GAME_PALETTE.aircraftBody;
+  for (const [sx, sy] of sprite) {
+    ctx.fillRect(sx * pixel, sy * pixel, pixel, pixel);
+  }
+  ctx.restore();
+}
+
+function drawFlightPath(
+  ctx: CanvasRenderingContext2D,
+  points: GridCoordinate[],
+  mapX: number,
+  mapY: number,
+  cellW: number,
+  cellH: number,
+  strokeStyle: string,
+  lineWidth: number,
+  dashed: boolean,
+) {
+  if (points.length < 2) return;
+  ctx.save();
+  if (dashed) ctx.setLineDash([5, 4]);
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  const start = toCanvasPoint(points[0], mapX, mapY, cellW, cellH);
+  ctx.moveTo(start.x, start.y);
+  for (let i = 1; i < points.length; i++) {
+    const point = toCanvasPoint(points[i], mapX, mapY, cellW, cellH);
+    ctx.lineTo(point.x, point.y);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawAirSupportMission(
+  ctx: CanvasRenderingContext2D,
+  mission: AirSupportMission,
+  mapX: number,
+  mapY: number,
+  cellW: number,
+  cellH: number,
+  time: number,
+  displayProgress: number,
+) {
+  const renderState = getMissionRenderState(mission, displayProgress);
+  const current = toCanvasPoint(renderState.position, mapX, mapY, cellW, cellH);
+  const runStart = toCanvasPoint(mission.dropStart, mapX, mapY, cellW, cellH);
+
+  drawFlightPath(
+    ctx,
+    mission.approachPoints,
+    mapX,
+    mapY,
+    cellW,
+    cellH,
+    GAME_PALETTE.aircraftRoute,
+    1.2,
+    true,
+  );
+
+  if (mission.exitPoints.length > 0) {
+    drawFlightPath(
+      ctx,
+      [mission.dropEnd, ...mission.exitPoints],
+      mapX,
+      mapY,
+      cellW,
+      cellH,
+      GAME_PALETTE.aircraftRoute,
+      1.2,
+      true,
+    );
+  }
+
+  drawFlightPath(
+    ctx,
+    [mission.dropStart, mission.dropEnd],
+    mapX,
+    mapY,
+    cellW,
+    cellH,
+    GAME_PALETTE.aircraftRun,
+    2,
+    false,
+  );
+
+  if (mission.phase === 'drop') {
+    const payloadColor = mission.payloadType === 'retardant'
+      ? GAME_PALETTE.payloadRetardant
+      : GAME_PALETTE.payloadWater;
+    const pulse = 0.65 + 0.35 * Math.sin(time * 0.01);
+    ctx.save();
+    ctx.strokeStyle = payloadColor.replace(/0\.(7|72)\)/, `${(0.35 + pulse * 0.25).toFixed(2)})`);
+    ctx.lineWidth = Math.max(3, Math.min(cellW, cellH) * 1.2);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(runStart.x, runStart.y);
+    ctx.lineTo(current.x, current.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawAircraftSilhouette(ctx, mission, current.x, current.y, cellW, cellH, renderState.heading);
 }
 
 function drawWindIndicator(

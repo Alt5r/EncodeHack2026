@@ -1,4 +1,4 @@
-import type { SessionState, Cell, Unit, RawSessionState } from './types';
+import type { AirSupportMission, SessionState, Cell, TreatedCell, Unit, RawSessionState } from './types';
 
 /**
  * Converts a raw backend session snapshot into the frontend SessionState shape.
@@ -77,6 +77,25 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
       status_text: u.status_text,
     }));
 
+  const airSupportMissions: AirSupportMission[] = raw.air_support_missions.map((mission) => ({
+    id: mission.id,
+    aircraftModel: mission.aircraft_model,
+    payloadType: mission.payload_type,
+    approachPoints: mission.approach_points.map(toRowCol),
+    dropStart: toRowCol(mission.drop_start),
+    dropEnd: toRowCol(mission.drop_end),
+    exitPoints: mission.exit_points.map(toRowCol),
+    phase: mission.phase,
+    progress: mission.progress,
+  }));
+
+  const treatedCells: TreatedCell[] = raw.treated_cells.map((cell) => ({
+    ...toRowCol(cell.coordinate),
+    payloadType: cell.payload_type,
+    strength: cell.strength,
+    remainingTicks: cell.remaining_ticks,
+  }));
+
   // ── Village: singular → array, top_left [x,y] → { row, col } ──
   const villages = [
     {
@@ -94,5 +113,7 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
     villages,
     wind: raw.wind,
     score: raw.score,
+    airSupportMissions,
+    treatedCells,
   };
 }

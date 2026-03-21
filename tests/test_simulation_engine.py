@@ -2,15 +2,18 @@
 
 from watchtower_backend.domain.commands import UnitCommand
 from watchtower_backend.domain.models.simulation import (
+    AirSupportPayload,
     CommandAction,
     FireIntensity,
     GameStatus,
     TerrainCell,
+    TreatedCellState,
     VegetationType,
     WaterType,
     WindState,
 )
 from watchtower_backend.services.sessions.runtime import build_initial_state
+from watchtower_backend.services.simulation.air_support import build_fallback_air_support_geometry
 from watchtower_backend.services.simulation.engine import SimulationEngine, _CellFireState
 
 
@@ -48,6 +51,28 @@ def _make_engine(
     if terrain_grid is None:
         terrain_grid = _make_terrain_grid(size=grid_size)
     return SimulationEngine(session_state=state, seed=seed, terrain_grid=terrain_grid)
+
+
+def _make_air_support_command(
+    engine: SimulationEngine,
+    *,
+    payload_type: AirSupportPayload = AirSupportPayload.RETARDANT,
+    target: tuple[int, int] = (12, 12),
+    drop_start: tuple[int, int] | None = None,
+    drop_end: tuple[int, int] | None = None,
+) -> UnitCommand:
+    """Create a tower air-support command for one test."""
+    return UnitCommand(
+        session_id=engine.session_state.id,
+        unit_id="tower",
+        action=CommandAction.DROP_AIR_SUPPORT,
+        target=target,
+        payload_type=payload_type,
+        drop_start=drop_start,
+        drop_end=drop_end,
+        rationale="Lay a support line across the fire edge.",
+        state_version=engine.session_state.version,
+    )
 
 
 # --- Original tests (updated for new engine signature) ---
@@ -135,6 +160,103 @@ def test_water_proximity_increases_moisture() -> None:
     # Cell 3 away should have base moisture
     moisture_3 = engine._get_cell_moisture((10, 13))
     assert moisture_3 == 0.3, f"Expected base moisture 0.3 far from water, got {moisture_3}"
+
+
+def test_air_support_drop_creates_treated_cells() -> None:
+    """A fixed-wing drop should leave a treated strip on the map."""
+    engine = _make_engine(fire_cells=[(12, 12), (12, 13), (12, 14)])
+
+    engine.step(commands=[_make_air_support_command(engine, drop_start=(12, 10), drop_end=(12, 16))])
+    engine.step(commands=[])
+
+    assert engine.session_state.treated_cells
+    assert any(cell.coordinate[0] == 12 for cell in engine.session_state.treated_cells)
+
+
+def test_new_air_support_mission_starts_at_off_map_entry() -> None:
+    """A newly dispatched mission should first appear at its off-map spawn point."""
+    engine = _make_engine(fire_cells=[(12, 12), (12, 13), (13, 13)])
+
+    engine.step(commands=[_make_air_support_command(engine)])
+
+    assert engine.session_state.air_support_missions
+    mission = engine.session_state.air_support_missions[0]
+    assert mission.phase.value == "approach"
+    assert mission.progress == 0.0
+    first_point = mission.approach_points[0]
+    assert (
+        first_point[0] < 0
+        or first_point[0] >= engine.session_state.grid_size
+        or first_point[1] < 0
+        or first_point[1] >= engine.session_state.grid_size
+    )
+
+    engine.step(commands=[])
+
+    assert engine.session_state.air_support_missions[0].progress > 0.0
+
+
+def test_fallback_air_support_can_generate_horizontal_drop_runs() -> None:
+    """North/south winds should allow a horizontal release line."""
+    _, drop_start, drop_end, _ = build_fallback_air_support_geometry(
+        fire_cells=[(10, 12), (11, 12), (12, 12)],
+        grid_size=24,
+        wind_direction="N",
+    )
+
+    assert drop_start[1] == drop_end[1]
+    assert drop_start[0] != drop_end[0]
+
+
+def test_fallback_air_support_can_generate_diagonal_drop_runs() -> None:
+    """Diagonal winds should allow a diagonal release line."""
+    _, drop_start, drop_end, _ = build_fallback_air_support_geometry(
+        fire_cells=[(10, 10), (11, 11), (12, 12)],
+        grid_size=24,
+        wind_direction="NE",
+    )
+
+    assert abs(drop_end[0] - drop_start[0]) == abs(drop_end[1] - drop_start[1])
+    assert drop_start[0] != drop_end[0]
+    assert drop_start[1] != drop_end[1]
+
+
+def test_retardant_cells_reduce_spread_probability() -> None:
+    """Retardant treatment should reduce spread probability into a target cell."""
+    grid = _make_terrain_grid(size=24, vegetation=VegetationType.FOREST)
+    engine = _make_engine(fire_cells=[(12, 12)], terrain_grid=grid)
+    fire_state = _CellFireState(fuel=1.0, moisture=0.3)
+    target = (12, 13)
+    base = engine._calc_spread_probability(
+        source=(12, 12),
+        target=target,
+        source_terrain=grid[12][12],
+        target_terrain=grid[12][13],
+        fire_state=fire_state,
+        wind_vec=(0.0, 0.0),
+        wind_speed=0.0,
+        is_diagonal=False,
+    )
+    engine.session_state.treated_cells = [
+        TreatedCellState(
+            coordinate=target,
+            payload_type=AirSupportPayload.RETARDANT,
+            strength=1.0,
+            remaining_ticks=12,
+        )
+    ]
+    reduced = engine._calc_spread_probability(
+        source=(12, 12),
+        target=target,
+        source_terrain=grid[12][12],
+        target_terrain=grid[12][13],
+        fire_state=fire_state,
+        wind_vec=(0.0, 0.0),
+        wind_speed=0.0,
+        is_diagonal=False,
+    )
+
+    assert reduced < base
 
 
 # --- Wind directionality tests ---

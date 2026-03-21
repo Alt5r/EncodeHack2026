@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from watchtower_backend.domain.models.simulation import CommandAction
+from watchtower_backend.domain.models.simulation import AirSupportPayload, CommandAction
 
 
 class PlannerCommandPayload(BaseModel):
@@ -22,6 +22,12 @@ class PlannerCommandPayload(BaseModel):
     action: CommandAction
     target_x: int
     target_y: int
+    payload_type: AirSupportPayload | None = None
+    approach_points: list[tuple[int, int]] = Field(default_factory=list)
+    drop_start_x: int | None = None
+    drop_start_y: int | None = None
+    drop_end_x: int | None = None
+    drop_end_y: int | None = None
     rationale: str = Field(min_length=1, max_length=300)
 
 
