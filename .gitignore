@@ -1,16 +1,23 @@
-<<<<<<< HEAD
-.worktrees/
-=======
+# Python
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
 
-.env
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
+tsconfig.tsbuildinfo
 
+# Env & data
+.env
 watchtower.db
 data/
 
+# OS
 .DS_Store
->>>>>>> 51c30db116d9572c1b1c9ad3ecc708969fd22c67
+
+# Worktrees
+.worktrees/
