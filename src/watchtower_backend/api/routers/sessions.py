@@ -6,6 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from watchtower_backend.api.dependencies import SessionManagerDependency
 from watchtower_backend.api.schemas.sessions import SessionCreateRequest, SessionDetail, SessionRead
+from watchtower_backend.domain.models.simulation import TerrainCell
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -16,9 +17,23 @@ async def create_session(
     session_manager: SessionManagerDependency,
 ) -> SessionDetail:
     """Create and start a new game session."""
+    terrain_grid: list[list[TerrainCell]] | None = None
+    if payload.terrain_grid is not None:
+        terrain_grid = [
+            [
+                TerrainCell(
+                    elevation=cell.elevation,
+                    vegetation=cell.vegetation,
+                    water=cell.water,
+                )
+                for cell in row
+            ]
+            for row in payload.terrain_grid
+        ]
     session_state = await session_manager.create_session(
         doctrine_text=payload.doctrine_text,
         doctrine_title=payload.doctrine_title,
+        terrain_grid=terrain_grid,
     )
     return SessionDetail.from_state(session_state=session_state)
 

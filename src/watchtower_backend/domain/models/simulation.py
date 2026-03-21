@@ -43,6 +43,30 @@ class CommandAction(StrEnum):
     HOLD_POSITION = "hold_position"
 
 
+class VegetationType(StrEnum):
+    """Vegetation types that affect fire spread rate and fuel."""
+
+    CLEARING = "clearing"
+    MEADOW = "meadow"
+    WOODLAND = "woodland"
+    FOREST = "forest"
+
+
+class WaterType(StrEnum):
+    """Water presence that blocks fire spread."""
+
+    NONE = "none"
+    WATER = "water"
+
+
+class FireIntensity(StrEnum):
+    """Fire intensity stages as a cell burns."""
+
+    EMBER = "ember"
+    BURNING = "burning"
+    INFERNO = "inferno"
+
+
 class WindState(BaseModel):
     """Wind conditions that influence fire spread.
 
@@ -55,6 +79,16 @@ class WindState(BaseModel):
 
     direction: str = Field(default="NE", min_length=1, max_length=4)
     speed_mph: float = Field(default=12.0, ge=0.0, le=100.0)
+
+
+class TerrainCell(BaseModel):
+    """Terrain data for a single grid cell, sent from the frontend."""
+
+    model_config = ConfigDict(frozen=True)
+
+    elevation: float = Field(default=0.0, ge=0.0, le=1.0)
+    vegetation: VegetationType = VegetationType.WOODLAND
+    water: WaterType = WaterType.NONE
 
 
 class VillageState(BaseModel):

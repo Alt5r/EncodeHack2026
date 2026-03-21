@@ -4,7 +4,21 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from watchtower_backend.domain.models.simulation import GameStatus, ScoreSummary, SessionState
+from watchtower_backend.domain.models.simulation import (
+    GameStatus,
+    ScoreSummary,
+    SessionState,
+    VegetationType,
+    WaterType,
+)
+
+
+class TerrainCellData(BaseModel):
+    """Terrain data for a single cell, sent from the frontend."""
+
+    elevation: float = Field(ge=0.0, le=1.0)
+    vegetation: VegetationType
+    water: WaterType
 
 
 class SessionCreateRequest(BaseModel):
@@ -16,6 +30,10 @@ class SessionCreateRequest(BaseModel):
         description="Player firefighting doctrine.",
     )
     doctrine_title: str | None = Field(default=None, max_length=200)
+    terrain_grid: list[list[TerrainCellData]] | None = Field(
+        default=None,
+        description="32x32 terrain grid computed by the frontend. Optional for backward compat.",
+    )
 
 
 class SessionRead(BaseModel):

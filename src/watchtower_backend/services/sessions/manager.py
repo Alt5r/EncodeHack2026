@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from watchtower_backend.core.config import Settings
 from watchtower_backend.core.errors import SessionNotFoundError
 from watchtower_backend.domain.events import BroadcastEnvelope
-from watchtower_backend.domain.models.simulation import GameStatus, SessionState
+from watchtower_backend.domain.models.simulation import GameStatus, SessionState, TerrainCell
 from watchtower_backend.domain.protocols import Planner, RadioSink, WeatherProvider
 from watchtower_backend.persistence.replay_store import ReplayStore
 from watchtower_backend.persistence.repositories.leaderboard import (
@@ -58,12 +58,14 @@ class SessionManager:
         self,
         doctrine_text: str,
         doctrine_title: str | None = None,
+        terrain_grid: list[list[TerrainCell]] | None = None,
     ) -> SessionState:
         """Create and start a new session runtime.
 
         Args:
             doctrine_text: Doctrine text entered by the player.
             doctrine_title: Optional doctrine title.
+            terrain_grid: Optional terrain grid from the frontend.
 
         Returns:
             Initial session state.
@@ -84,6 +86,7 @@ class SessionManager:
             planner_interval_seconds=self._settings.default_planner_interval_seconds,
             max_event_backlog=self._settings.max_session_event_backlog,
             seed=sum(ord(character) for character in session_state.id),
+            terrain_grid=terrain_grid,
         )
         async with self._lock:
             self._runtimes[session_state.id] = runtime

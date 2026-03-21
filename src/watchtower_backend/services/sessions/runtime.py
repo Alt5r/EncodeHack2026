@@ -15,6 +15,7 @@ from watchtower_backend.domain.models.simulation import (
     Doctrine,
     GameStatus,
     SessionState,
+    TerrainCell,
     UnitState,
     UnitType,
     VillageState,
@@ -41,6 +42,7 @@ class SessionRuntime:
         planner_interval_seconds: float,
         max_event_backlog: int,
         seed: int,
+        terrain_grid: list[list[TerrainCell]] | None = None,
     ) -> None:
         """Initialize the session runtime.
 
@@ -53,6 +55,7 @@ class SessionRuntime:
             planner_interval_seconds: Planner execution interval.
             max_event_backlog: Per-subscriber queue size.
             seed: Seed for deterministic simulation behavior.
+            terrain_grid: Optional terrain grid from the frontend.
         """
         self._session_state = session_state
         self._planner = planner
@@ -60,7 +63,9 @@ class SessionRuntime:
         self._replay_store = replay_store
         self._tick_interval_seconds = tick_interval_seconds
         self._planner_interval_seconds = planner_interval_seconds
-        self._engine = SimulationEngine(session_state=session_state, seed=seed)
+        self._engine = SimulationEngine(
+            session_state=session_state, seed=seed, terrain_grid=terrain_grid,
+        )
         self._broadcaster = SessionBroadcaster(max_backlog=max_event_backlog)
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
