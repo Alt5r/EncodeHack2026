@@ -1,13 +1,16 @@
-"""Radio transcript service."""
+"""Radio transcript service with walkie-talkie audio post-processing."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 
 from elevenlabs.client import AsyncElevenLabs
+
+_FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 
 from watchtower_backend.core.config import Settings
 from watchtower_backend.domain.events import RadioMessage
@@ -17,6 +20,59 @@ logger = logging.getLogger(__name__)
 
 type RadioEventPublisher = Callable[[str, str, dict[str, object]], Awaitable[None]]
 type LuffaRadioRelay = Callable[[RadioMessage], Awaitable[None]]
+
+
+async def _apply_radio_effect(audio_bytes: bytes) -> bytes:
+    """Post-process TTS audio to sound like a walkie-talkie radio transmission.
+
+    Pipeline:
+    - Bandpass 300-3000 Hz  — cuts bass/treble, gives the RF telephone-band quality
+    - Heavy compression     — simulates radio compander (threshold -15 dB, ratio 8:1)
+    - Volume makeup gain    — compensates for compression-induced level drop
+    - Pink noise at 2 %     — low-level static mixed into the signal
+    - Hard limiter          — prevents clipping after mixing
+
+    Args:
+        audio_bytes: Raw MP3 bytes from ElevenLabs.
+
+    Returns:
+        Processed MP3 bytes, or the original bytes if ffmpeg fails.
+    """
+    filter_complex = (
+        # Process the voice track through the radio chain
+        "[0:a]"
+        "highpass=f=300,"
+        "lowpass=f=3000,"
+        "acompressor=threshold=-15dB:ratio=8:attack=2:release=30:makeup=2.5,"
+        "volume=2"
+        "[radio];"
+        # Generate pink noise for static
+        "[1:a]volume=0.02[noise];"
+        # Mix voice + static; noise track ends when voice track ends
+        "[radio][noise]amix=inputs=2:duration=first,"
+        "alimiter=level_in=1:level_out=0.9:attack=3:release=50"
+        "[out]"
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _FFMPEG, "-y",
+            "-i", "pipe:0",                             # voice from stdin
+            "-f", "lavfi", "-i", "anoisesrc=color=pink", # infinite pink noise source
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-f", "mp3", "-q:a", "4",
+            "pipe:1",                                   # processed audio to stdout
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate(audio_bytes)
+        if proc.returncode == 0 and stdout:
+            return stdout
+        logger.warning("ffmpeg radio effect returned code %d; using raw audio.", proc.returncode)
+    except Exception as exc:
+        logger.warning("ffmpeg radio effect failed: %s; using raw audio.", exc)
+    return audio_bytes
 
 
 class InMemoryRadioService:
@@ -140,12 +196,10 @@ class CompositeRadioService:
             return None
 
         voice_id = self._resolve_voice_id(message.voice_key)
-        if voice_id is None:
-            return None
-
         session_directory = self._audio_directory / session_id
         session_directory.mkdir(parents=True, exist_ok=True)
         file_path = session_directory / f"{message.message_id}.mp3"
+
         audio_chunks = self._elevenlabs_client.text_to_speech.convert(
             voice_id=voice_id,
             text=message.text,
@@ -155,6 +209,8 @@ class CompositeRadioService:
         audio_bytes = b""
         async for chunk in audio_chunks:
             audio_bytes += chunk
+
+        audio_bytes = await _apply_radio_effect(audio_bytes)
 
         with file_path.open("wb") as audio_file:
             audio_file.write(audio_bytes)
@@ -167,12 +223,11 @@ class CompositeRadioService:
             return
         await self._luffa_relay(message)
 
-    def _resolve_voice_id(self, voice_key: str) -> str | None:
+    def _resolve_voice_id(self, voice_key: str) -> str:
         """Resolve a logical voice key to an ElevenLabs voice id."""
-        if voice_key == "command":
-            return self._settings.elevenlabs_command_voice_id
-        if voice_key == "helicopter":
-            return self._settings.elevenlabs_helicopter_voice_id
-        if voice_key == "ground":
-            return self._settings.elevenlabs_ground_voice_id
-        return None
+        mapping = {
+            "command": self._settings.elevenlabs_command_voice_id,
+            "helicopter": self._settings.elevenlabs_helicopter_voice_id,
+            "ground": self._settings.elevenlabs_ground_voice_id,
+        }
+        return mapping.get(voice_key, self._settings.elevenlabs_command_voice_id)
