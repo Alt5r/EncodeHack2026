@@ -132,6 +132,7 @@ export default function Home() {
 
   const startGame = useCallback(
     async (doctrine: string) => {
+      initAudio();
       const nextTerrainParams = { ...DEFAULT_PARAMS, seed: Date.now() };
       setTerrainParams(nextTerrainParams);
       const sessionId = await createSession(doctrine, nextTerrainParams);
@@ -156,7 +157,7 @@ export default function Home() {
       }
       setScreen({ kind: 'game', sessionId });
     },
-    [createSession],
+    [createSession, initAudio],
   );
 
   // ── WebSocket event routing ─────────────────────────────────

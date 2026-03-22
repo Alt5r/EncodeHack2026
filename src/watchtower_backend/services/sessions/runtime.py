@@ -249,10 +249,6 @@ class SessionRuntime:
             session_state=self._session_state,
             message=radio_message,
         )
-        await self._emit_event(
-            event_type="radio.message",
-            payload=radio_message.model_dump(mode="json"),
-        )
 
     async def _emit_event(self, event_type: str, payload: dict[str, object]) -> None:
         """Emit one typed session event."""

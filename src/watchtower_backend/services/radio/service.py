@@ -110,7 +110,7 @@ class CompositeRadioService:
         self._settings = settings
         self._event_publisher = event_publisher
         self._elevenlabs_client = elevenlabs_client
-        self._queue: asyncio.Queue[tuple[str, RadioMessage]] = asyncio.Queue(
+        self._queue: asyncio.Queue[tuple[str, int, RadioMessage]] = asyncio.Queue(
             maxsize=settings.radio_queue_size
         )
         self._worker_task: asyncio.Task[None] | None = None
@@ -152,7 +152,7 @@ class CompositeRadioService:
             None.
         """
         try:
-            self._queue.put_nowait((session_state.id, message))
+            self._queue.put_nowait((session_state.id, session_state.tick, message))
         except asyncio.QueueFull:
             logger.warning(
                 "Radio queue full; dropping message.",
@@ -162,9 +162,9 @@ class CompositeRadioService:
     async def _worker(self) -> None:
         """Process queued radio side effects."""
         while True:
-            session_id, message = await self._queue.get()
+            session_id, tick, message = await self._queue.get()
             try:
-                await self._process_message(session_id=session_id, message=message)
+                await self._process_message(session_id=session_id, tick=tick, message=message)
             except Exception as error:
                 logger.warning(
                     "Radio processing failed.",
@@ -175,8 +175,20 @@ class CompositeRadioService:
                     },
                 )
 
-    async def _process_message(self, session_id: str, message: RadioMessage) -> None:
+    async def _process_message(self, session_id: str, tick: int, message: RadioMessage) -> None:
         """Handle TTS and relay work for one message."""
+        if self._event_publisher is not None:
+            await self._event_publisher(
+                session_id,
+                "radio.message",
+                {
+                    "message_id": message.message_id,
+                    "speaker": message.speaker,
+                    "voice_key": message.voice_key,
+                    "text": message.text,
+                    "tick": tick,
+                },
+            )
         audio_url = await self._maybe_synthesize_audio(session_id=session_id, message=message)
         if audio_url is not None and self._event_publisher is not None:
             await self._event_publisher(
