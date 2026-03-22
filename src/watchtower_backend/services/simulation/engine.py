@@ -100,6 +100,9 @@ _GROUND_CREW_FIRE_NEARBY_PENALTY = 0.3
 _GROUND_CREW_WATER_EDGE_PENALTY = 0.55
 _GROUND_CREW_WATER_NEARBY_PENALTY = 0.2
 _GROUND_CREW_MAX_STEP_COST = 2.35
+_MIN_TICKS_BEFORE_TOTAL_EXTINGUISH = 10
+_PERSISTENT_HOTSPOT_FUEL = 0.08
+_PERSISTENT_HOTSPOT_MOISTURE = 0.3
 
 # 8-directional offsets: (dx, dy, is_diagonal)
 _NEIGHBOURS: list[tuple[int, int, bool]] = [
@@ -152,7 +155,7 @@ class SimulationEngine:
             self._terrain_grid = self._generate_fallback_terrain()
 
         self._water_cells: set[Coordinate] = {
-            (row, col)
+            (col, row)
             for row in range(self._grid_size)
             for col in range(self._grid_size)
             if self._terrain_grid[row][col].water != WaterType.NONE
@@ -293,7 +296,7 @@ class SimulationEngine:
 
     def _get_terrain(self, coord: Coordinate) -> TerrainCell:
         """Return the terrain cell at a coordinate."""
-        return self._terrain_grid[coord[0]][coord[1]]
+        return self._terrain_grid[coord[1]][coord[0]]
 
     def _get_cell_moisture(self, coord: Coordinate) -> float:
         """Return effective moisture for a cell (base + water proximity boost)."""
@@ -331,6 +334,7 @@ class SimulationEngine:
         """Advance burn ticks, consume fuel, update intensity. Return burned-out cells."""
         burned_out: list[Coordinate] = []
         to_remove: list[Coordinate] = []
+        active_fire = set(self._session_state.fire_cells)
 
         for coord, fire_state in self._fire_states.items():
             # Consume fuel
@@ -355,6 +359,15 @@ class SimulationEngine:
                     fire_state.intensity = FireIntensity.INFERNO
                 elif fire_state.burn_ticks >= 2:
                     fire_state.intensity = FireIntensity.BURNING
+
+        if to_remove and not self._total_extinguish_unlocked():
+            survivors = active_fire.difference(to_remove)
+            if not survivors:
+                hotspot = self._pick_hotspot_survivor(to_remove)
+                if hotspot is not None:
+                    to_remove.remove(hotspot)
+                    burned_out.remove(hotspot)
+                    self._stabilize_hotspot(hotspot)
 
         # Move burned-out cells
         for coord in to_remove:
@@ -414,6 +427,12 @@ class SimulationEngine:
                 # Water blocks fire completely
                 target_terrain = self._get_terrain(neighbour)
                 if target_terrain.water != WaterType.NONE:
+                    continue
+                if is_diagonal and self._fire_diagonal_transition_blocked(
+                    source=source,
+                    target=neighbour,
+                    firebreaks=firebreaks,
+                ):
                     continue
 
                 prob = self._calc_spread_probability(
@@ -530,6 +549,13 @@ class SimulationEngine:
             else:
                 remaining_fire.append(cell)
 
+        if suppressed and not self._total_extinguish_unlocked() and not remaining_fire:
+            hotspot = self._pick_hotspot_survivor(suppressed, focus=center)
+            if hotspot is not None:
+                suppressed.remove(hotspot)
+                remaining_fire.append(hotspot)
+                self._stabilize_hotspot(hotspot)
+
         self._session_state.fire_cells = sorted(remaining_fire)
         self._session_state.suppressed_cells.extend(suppressed)
         return sorted(suppressed)
@@ -573,17 +599,8 @@ class SimulationEngine:
                 if unit.water_remaining <= 0:
                     raise CommandValidationError("Helicopter is out of water.")
                 unit.target = target
-                suppressed = self._suppress_fire(center=target, radius=2)
-                unit.water_remaining -= 1
                 unit.status_text = "suppressing"
-                return [
-                    {
-                        "kind": "water_drop",
-                        "unit_id": unit.id,
-                        "target": target,
-                        "cells": suppressed,
-                    }
-                ]
+                return []
             case CommandAction.CREATE_FIREBREAK:
                 if unit.unit_type is not UnitType.GROUND_CREW:
                     raise CommandValidationError("Only ground crews can create firebreaks.")
@@ -597,16 +614,8 @@ class SimulationEngine:
                         "Ground crews cannot safely reach that firebreak position."
                     )
                 unit.target = target
-                cells = self._create_firebreak(center=target)
                 unit.status_text = "laying firebreak"
-                return [
-                    {
-                        "kind": "firebreak_created",
-                        "unit_id": unit.id,
-                        "target": target,
-                        "cells": cells,
-                    }
-                ]
+                return []
             case CommandAction.HOLD_POSITION:
                 unit.target = None
                 unit.status_text = "holding"
@@ -739,6 +748,19 @@ class SimulationEngine:
 
         if suppressed:
             suppressed_set = set(suppressed)
+            if not self._total_extinguish_unlocked():
+                remaining_fire = [
+                    cell for cell in self._session_state.fire_cells if cell not in suppressed_set
+                ]
+                if not remaining_fire:
+                    focus = (
+                        (mission.drop_start[0] + mission.drop_end[0]) // 2,
+                        (mission.drop_start[1] + mission.drop_end[1]) // 2,
+                    )
+                    hotspot = self._pick_hotspot_survivor(sorted(suppressed_set), focus=focus)
+                    if hotspot is not None:
+                        suppressed_set.discard(hotspot)
+                        self._stabilize_hotspot(hotspot)
             self._session_state.fire_cells = [
                 cell for cell in self._session_state.fire_cells if cell not in suppressed_set
             ]
@@ -829,9 +851,7 @@ class SimulationEngine:
                 unit.target = None
                 continue
             if unit.position == unit.target:
-                if unit.status_text == "moving":
-                    unit.status_text = "ready"
-                    unit.target = None
+                mutations.extend(self._complete_unit_assignment(unit))
                 continue
 
             if unit.unit_type is UnitType.GROUND_CREW:
@@ -863,10 +883,63 @@ class SimulationEngine:
             unit.position = next_position
             mutations.append({"kind": "unit_moved", "unit_id": unit.id, "position": unit.position})
 
-            if unit.position == unit.target and unit.status_text == "moving":
+            if unit.position == unit.target:
+                mutations.extend(self._complete_unit_assignment(unit))
+        return mutations
+
+    def _complete_unit_assignment(self, unit: UnitState) -> list[dict[str, object]]:
+        """Execute the action that was waiting on this unit reaching its target."""
+        if unit.target is None:
+            return []
+
+        if unit.status_text == "moving":
+            unit.status_text = "ready"
+            unit.target = None
+            return []
+
+        if unit.status_text == "suppressing":
+            if unit.unit_type is not UnitType.HELICOPTER or unit.water_remaining <= 0:
                 unit.status_text = "ready"
                 unit.target = None
-        return mutations
+                return []
+            target = unit.target
+            suppressed = self._suppress_fire(center=target, radius=2)
+            unit.water_remaining -= 1
+            unit.status_text = "ready"
+            unit.target = None
+            return [
+                {
+                    "kind": "water_drop",
+                    "unit_id": unit.id,
+                    "target": target,
+                    "cells": suppressed,
+                }
+            ]
+
+        if unit.status_text == "laying firebreak":
+            if unit.unit_type is not UnitType.GROUND_CREW:
+                unit.status_text = "ready"
+                unit.target = None
+                return []
+            target = unit.target
+            preview_cells = self._preview_firebreak(center=target)
+            if any(cell in self._session_state.fire_cells for cell in preview_cells):
+                unit.status_text = "holding"
+                unit.target = None
+                return []
+            cells = self._create_firebreak(center=target)
+            unit.status_text = "ready"
+            unit.target = None
+            return [
+                {
+                    "kind": "firebreak_created",
+                    "unit_id": unit.id,
+                    "target": target,
+                    "cells": cells,
+                }
+            ]
+
+        return []
 
     def _get_unit(self, unit_id: str) -> UnitState:
         """Return the matching unit state.
@@ -968,6 +1041,51 @@ class SimulationEngine:
             current = next_cell
         return current
 
+    def _diagonal_side_cells(
+        self,
+        source: Coordinate,
+        target: Coordinate,
+    ) -> tuple[Coordinate, Coordinate]:
+        """Return the orthogonal side cells adjacent to one diagonal transition."""
+        delta_x = self._sign(target[0] - source[0])
+        delta_y = self._sign(target[1] - source[1])
+        return (
+            (source[0] + delta_x, source[1]),
+            (source[0], source[1] + delta_y),
+        )
+
+    def _fire_diagonal_transition_blocked(
+        self,
+        *,
+        source: Coordinate,
+        target: Coordinate,
+        firebreaks: set[Coordinate],
+    ) -> bool:
+        """Block diagonal fire spread across water or firebreak corners."""
+        side_a, side_b = self._diagonal_side_cells(source, target)
+        for side in (side_a, side_b):
+            if not (0 <= side[0] < self._grid_size and 0 <= side[1] < self._grid_size):
+                return True
+            if side in firebreaks:
+                return True
+            if self._get_terrain(side).water is not WaterType.NONE:
+                return True
+        return False
+
+    def _ground_diagonal_transition_blocked(
+        self,
+        *,
+        source: Coordinate,
+        target: Coordinate,
+        active_fire: set[Coordinate],
+    ) -> bool:
+        """Prevent crews from cutting diagonally across fire or water corners."""
+        side_a, side_b = self._diagonal_side_cells(source, target)
+        return not (
+            self._is_ground_cell_passable(side_a, active_fire)
+            and self._is_ground_cell_passable(side_b, active_fire)
+        )
+
     def _ground_target_reachable(self, origin: Coordinate, target: Coordinate) -> bool:
         """Return whether a ground crew can safely reach the target now."""
         return self._find_ground_path(
@@ -1005,6 +1123,12 @@ class SimulationEngine:
                 next_col = current[1] + delta_col
                 next_cell = (next_row, next_col)
                 if not self._is_ground_cell_passable(next_cell, active_fire):
+                    continue
+                if diagonal and self._ground_diagonal_transition_blocked(
+                    source=current,
+                    target=next_cell,
+                    active_fire=active_fire,
+                ):
                     continue
                 step_cost = self._ground_step_cost(
                     current=current,
@@ -1166,5 +1290,43 @@ class SimulationEngine:
             self._session_state.winner = "fire"
             return
         if not fire_cells:
+            if not self._total_extinguish_unlocked():
+                self._session_state.status = GameStatus.RUNNING
+                self._session_state.winner = None
+                return
             self._session_state.status = GameStatus.WON
             self._session_state.winner = "player"
+
+    def _total_extinguish_unlocked(self) -> bool:
+        """Return whether the incident is allowed to be fully extinguished."""
+        return self._session_state.tick >= _MIN_TICKS_BEFORE_TOTAL_EXTINGUISH
+
+    def _pick_hotspot_survivor(
+        self,
+        candidates: list[Coordinate],
+        *,
+        focus: Coordinate | None = None,
+    ) -> Coordinate | None:
+        """Pick one fire cell to keep alive so the incident cannot end too early."""
+        if not candidates:
+            return None
+        if focus is None:
+            return sorted(candidates)[0]
+        return min(
+            candidates,
+            key=lambda coord: (abs(coord[0] - focus[0]) + abs(coord[1] - focus[1]), coord[0], coord[1]),
+        )
+
+    def _stabilize_hotspot(self, coord: Coordinate) -> None:
+        """Keep one low-intensity hotspot alive during the opening phase."""
+        fire_state = self._fire_states.get(coord)
+        if fire_state is None:
+            fire_state = self._make_fire_state(coord)
+            self._fire_states[coord] = fire_state
+        fire_state.fuel = max(fire_state.fuel, _PERSISTENT_HOTSPOT_FUEL)
+        fire_state.moisture = min(fire_state.moisture, _PERSISTENT_HOTSPOT_MOISTURE)
+        fire_state.intensity = FireIntensity.EMBER
+        fire_state.burn_ticks = min(fire_state.burn_ticks, 1)
+        if coord not in self._session_state.fire_cells:
+            self._session_state.fire_cells.append(coord)
+            self._session_state.fire_cells.sort()

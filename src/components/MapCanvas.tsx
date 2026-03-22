@@ -65,6 +65,10 @@ const UNIT_MOVE_DURATION_MS: Record<Unit['type'], number> = {
   ground_crew: 1000,
 };
 
+function shouldSnapUnitToSnapshot(unit: Unit): boolean {
+  return !unit.target || unit.status_text === 'ready' || unit.status_text === 'holding';
+}
+
 export default function MapCanvas({ params, gameState, showGrid, selectedCell, onCellSelect }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const terrainCacheRef = useRef<HTMLCanvasElement | null>(null);
@@ -652,6 +656,17 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
       }
 
       if (existing.toRow !== unit.row || existing.toCol !== unit.col) {
+        if (shouldSnapUnitToSnapshot(unit)) {
+          unitAnimationRef.current.set(unit.id, {
+            fromRow: unit.row,
+            fromCol: unit.col,
+            toRow: unit.row,
+            toCol: unit.col,
+            updatedAt: now,
+            durationMs: 0,
+          });
+          continue;
+        }
         const currentPosition = getAnimationCoordinate(existing, now);
         unitAnimationRef.current.set(unit.id, {
           fromRow: currentPosition.row,

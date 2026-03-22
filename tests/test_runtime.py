@@ -80,6 +80,15 @@ class _FakeRadioSink:
         self.messages.append(message)
 
 
+class _ClosableRadioSink(_FakeRadioSink):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed_session_ids: list[str] = []
+
+    async def close_session(self, session_id: str) -> None:
+        self.closed_session_ids.append(session_id)
+
+
 async def test_session_runtime_runs_planner_immediately(tmp_path) -> None:
     """New sessions should not wait a full planner interval before first planning."""
     planner = _FakePlanner()
@@ -196,3 +205,31 @@ async def test_session_runtime_emits_air_support_radio_updates(tmp_path) -> None
     assert any(message.speaker == "Watchtower" and "inbound" in message.text for message in radio_sink.messages)
     assert any("drop underway" in text for text in texts)
     assert any("Drop complete, exiting sector." == text for text in texts)
+
+
+async def test_session_runtime_closes_radio_when_session_completes(tmp_path) -> None:
+    """Terminal sessions should shut down their radio stream before returning."""
+    radio_sink = _ClosableRadioSink()
+    runtime = SessionRuntime(
+        session_state=build_initial_state(
+            doctrine_text="Protect the village.",
+            doctrine_title="Doctrine",
+            wind=WindState(direction="NE", speed_mph=10.0),
+            grid_size=24,
+        ),
+        planner=_FakePlanner(),
+        radio_sink=radio_sink,
+        replay_store=ReplayStore(root_directory=tmp_path / "replays"),
+        tick_interval_seconds=0.01,
+        planner_interval_seconds=99999.0,
+        max_event_backlog=10,
+        seed=123,
+    )
+    runtime.session_state.fire_cells = []
+
+    await runtime.start()
+    await asyncio.sleep(0.03)
+    await runtime.wait()
+
+    assert runtime.session_state.status.value == "won"
+    assert radio_sink.closed_session_ids == [runtime.session_state.id]

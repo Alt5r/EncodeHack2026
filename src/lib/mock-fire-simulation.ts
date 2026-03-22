@@ -122,6 +122,48 @@ function isGroundCellPassable(
   return !fireKeys.has(coordinateKey(row, col));
 }
 
+function isDiagonalGroundTransitionBlocked(
+  current: GridCoordinate,
+  next: GridCoordinate,
+  terrainGrid: SessionTerrainCellData[][],
+  fireKeys: Set<string>,
+): boolean {
+  if (current.row === next.row || current.col === next.col) {
+    return false;
+  }
+  return !(
+    isGroundCellPassable(current.row, next.col, terrainGrid, fireKeys)
+    && isGroundCellPassable(next.row, current.col, terrainGrid, fireKeys)
+  );
+}
+
+function isDiagonalFireTransitionBlocked(
+  source: Cell,
+  targetRow: number,
+  targetCol: number,
+  terrainGrid: SessionTerrainCellData[][],
+  state: SessionState,
+): boolean {
+  if (source.row === targetRow || source.col === targetCol) {
+    return false;
+  }
+  const sideA = { row: source.row, col: targetCol };
+  const sideB = { row: targetRow, col: source.col };
+  for (const side of [sideA, sideB]) {
+    if (side.row < 0 || side.col < 0 || side.row >= terrainGrid.length || side.col >= terrainGrid.length) {
+      return true;
+    }
+    if (terrainGrid[side.row][side.col].water !== 'none') {
+      return true;
+    }
+    const sideCell = state.cells.find((cell) => cell.row === side.row && cell.col === side.col);
+    if (sideCell?.state === 'firebreak') {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getGroundWaterPenalty(
   row: number,
   col: number,
@@ -242,6 +284,14 @@ function findGroundPath(
         continue;
       }
       const next: GridCoordinate = { row: nextRow, col: nextCol };
+      if (neighbour.diagonal && isDiagonalGroundTransitionBlocked(
+        { row: current.row, col: current.col },
+        next,
+        terrainGrid,
+        fireKeys,
+      )) {
+        continue;
+      }
       const nextKey = coordinateKey(nextRow, nextCol);
       const nextCost = currentCost + getGroundStepCost(
         { row: current.row, col: current.col },
@@ -696,6 +746,15 @@ export function advanceMockSessionState(
       const key = coordinateKey(row, col);
       if (occupied.has(key) || newKeys.has(key)) continue;
       if (terrainGrid[row][col].water !== 'none') continue;
+      if (neighbour.diagonal && isDiagonalFireTransitionBlocked(
+        source,
+        row,
+        col,
+        terrainGrid,
+        movementState,
+      )) {
+        continue;
+      }
 
       const probability = computeSpreadProbability(
         source,

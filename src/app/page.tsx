@@ -85,7 +85,9 @@ export default function Home() {
     analyserNode,
     enqueueAudio,
     initAudio,
+    stopAudio,
   } = useRadioAudio();
+  const ignoreRadioForSessionIdRef = useRef<string | null>(null);
 
   // Format tick number as a time string (HH:MM:SS style based on tick)
   const tickToTime = useCallback((tick: number): string => {
@@ -132,12 +134,15 @@ export default function Home() {
 
   const startGame = useCallback(
     async (doctrine: string) => {
+      stopAudio();
       initAudio();
       const nextTerrainParams = { ...DEFAULT_PARAMS, seed: Date.now() };
       setTerrainParams(nextTerrainParams);
       const sessionId = await createSession(doctrine, nextTerrainParams);
       setGameState(MOCK_STATE);
       setRadioMessages([]);
+      voiceKeyMap.current.clear();
+      ignoreRadioForSessionIdRef.current = null;
       setScoreTick(sessionId === 'mock-session' ? MOCK_STATE.tick : 0);
       setBurnedCells(sessionId === 'mock-session' ? MOCK_STATE.score.burned_cells : 0);
       setSuppressedCells(sessionId === 'mock-session' ? MOCK_STATE.score.suppressed_cells : 0);
@@ -157,7 +162,7 @@ export default function Home() {
       }
       setScreen({ kind: 'game', sessionId });
     },
-    [createSession, initAudio],
+    [createSession, initAudio, stopAudio],
   );
 
   // ── WebSocket event routing ─────────────────────────────────
@@ -188,6 +193,10 @@ export default function Home() {
               firebreak_cells: snap.cells.filter((cell) => cell.state === 'firebreak').length,
               village_damage: 0,
             };
+            if (activeSessionId) {
+              ignoreRadioForSessionIdRef.current = activeSessionId;
+            }
+            stopAudio();
             setScreen({ kind: 'result', outcome: snap.status, score });
             return;
           }
@@ -207,8 +216,12 @@ export default function Home() {
             burned_cells: 0,
             suppressed_cells: 0,
             firebreak_cells: 0,
-            village_damage: 0,
+              village_damage: 0,
           };
+          if (activeSessionId) {
+            ignoreRadioForSessionIdRef.current = activeSessionId;
+          }
+          stopAudio();
           setScreen({ kind: 'result', outcome, score });
           return;
         }
@@ -230,6 +243,9 @@ export default function Home() {
         }
 
         if (type === 'radio.message') {
+          if (ignoreRadioForSessionIdRef.current === activeSessionId) {
+            return;
+          }
           const p = payload as RadioMessagePayload;
           voiceKeyMap.current.set(p.message_id, p.voice_key);
 
@@ -245,6 +261,9 @@ export default function Home() {
         }
 
         if (type === 'radio.audio_ready') {
+          if (ignoreRadioForSessionIdRef.current === activeSessionId) {
+            return;
+          }
           const p = payload as AudioReadyPayload;
           const voiceKey = voiceKeyMap.current.get(p.message_id) ?? 'command';
 
@@ -262,7 +281,7 @@ export default function Home() {
           });
         }
       },
-      [activeSessionId, tickToTime, enqueueAudio],
+      [activeSessionId, tickToTime, enqueueAudio, stopAudio],
     ),
   });
 
@@ -278,6 +297,13 @@ export default function Home() {
     }
     lastLiveConnectionRef.current = isLiveSessionConnected;
   }, [activeSessionId, isLiveSessionConnected]);
+
+  useEffect(() => {
+    if (screen.kind === 'game') {
+      return;
+    }
+    stopAudio();
+  }, [screen.kind, stopAudio]);
 
   useEffect(() => {
     if (screen.kind !== 'game') {

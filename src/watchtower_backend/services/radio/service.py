@@ -117,6 +117,7 @@ class CompositeRadioService:
         self._audio_directory = settings.audio_directory
         self._audio_directory.mkdir(parents=True, exist_ok=True)
         self._luffa_relay: LuffaRadioRelay | None = None
+        self._closed_session_ids: set[str] = set()
 
     async def start(self) -> None:
         """Start the background worker."""
@@ -151,6 +152,8 @@ class CompositeRadioService:
         Returns:
             None.
         """
+        if session_state.id in self._closed_session_ids:
+            return
         try:
             self._queue.put_nowait((session_state.id, session_state.tick, message))
         except asyncio.QueueFull:
@@ -159,11 +162,17 @@ class CompositeRadioService:
                 extra={"session_id": session_state.id, "message_id": message.message_id},
             )
 
+    async def close_session(self, session_id: str) -> None:
+        """Stop emitting queued or future radio for one finished session."""
+        self._closed_session_ids.add(session_id)
+
     async def _worker(self) -> None:
         """Process queued radio side effects."""
         while True:
             session_id, tick, message = await self._queue.get()
             try:
+                if session_id in self._closed_session_ids:
+                    continue
                 await self._process_message(session_id=session_id, tick=tick, message=message)
             except Exception as error:
                 logger.warning(
@@ -174,9 +183,13 @@ class CompositeRadioService:
                         "error": str(error),
                     },
                 )
+            finally:
+                self._queue.task_done()
 
     async def _process_message(self, session_id: str, tick: int, message: RadioMessage) -> None:
         """Handle TTS and relay work for one message."""
+        if session_id in self._closed_session_ids:
+            return
         if self._event_publisher is not None:
             await self._event_publisher(
                 session_id,
@@ -189,7 +202,11 @@ class CompositeRadioService:
                     "tick": tick,
                 },
             )
+        if session_id in self._closed_session_ids:
+            return
         audio_url = await self._maybe_synthesize_audio(session_id=session_id, message=message)
+        if session_id in self._closed_session_ids:
+            return
         if audio_url is not None and self._event_publisher is not None:
             await self._event_publisher(
                 session_id,
@@ -200,6 +217,8 @@ class CompositeRadioService:
                     "audio_url": audio_url,
                 },
             )
+        if session_id in self._closed_session_ids:
+            return
         await self._maybe_send_to_luffa(message=message)
 
     async def _maybe_synthesize_audio(self, session_id: str, message: RadioMessage) -> str | None:

@@ -56,3 +56,43 @@ async def test_composite_radio_service_emits_radio_message_event(tmp_path) -> No
     assert published_events[0][2]["voice_key"] == "helicopter"
     assert published_events[0][2]["text"] == "Inbound to the flank."
     assert published_events[0][2]["tick"] == 7
+
+
+async def test_composite_radio_service_drops_queued_audio_for_closed_session(tmp_path) -> None:
+    """Closed sessions should stop emitting queued radio lines."""
+    published_events: list[tuple[str, str, dict[str, object]]] = []
+
+    async def event_publisher(
+        session_id: str,
+        event_type: str,
+        payload: dict[str, object],
+    ) -> None:
+        published_events.append((session_id, event_type, payload))
+
+    settings = Settings(
+        audio_directory=tmp_path / "audio",
+    )
+    service = CompositeRadioService(
+        settings=settings,
+        event_publisher=event_publisher,
+        elevenlabs_client=None,
+    )
+    session_state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    message = RadioMessage(
+        speaker="Alpha",
+        voice_key="helicopter",
+        text="Inbound to the flank.",
+    )
+
+    await service.start()
+    await service.publish(session_state=session_state, message=message)
+    await service.close_session(session_state.id)
+    await asyncio.sleep(0.05)
+    await service.close()
+
+    assert published_events == []

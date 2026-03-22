@@ -67,7 +67,7 @@ PAYLOAD_SETTINGS: dict[AirSupportPayload, PayloadSettings] = {
 MISSION_PROGRESS_PER_TICK: dict[AirSupportPhase, float] = {
     AirSupportPhase.APPROACH: 0.5,
     AirSupportPhase.DROP: 0.5,
-    AirSupportPhase.EXIT: 0.32,
+    AirSupportPhase.EXIT: 0.2,
     AirSupportPhase.COMPLETE: 0.0,
 }
 
@@ -332,6 +332,101 @@ def shift_run_toward_focus(
     return best_start, best_end
 
 
+def build_centered_run(
+    *,
+    focus: Coordinate,
+    run_axis: Coordinate,
+    grid_size: int,
+    radius: int = 3,
+) -> tuple[Coordinate, Coordinate]:
+    """Build one straight run centered on a focus point."""
+    return (
+        clamp_coordinate(
+            (focus[0] - run_axis[0] * radius, focus[1] - run_axis[1] * radius),
+            grid_size,
+        ),
+        clamp_coordinate(
+            (focus[0] + run_axis[0] * radius, focus[1] + run_axis[1] * radius),
+            grid_size,
+        ),
+    )
+
+
+def run_fire_overlap(
+    drop_start: Coordinate,
+    drop_end: Coordinate,
+    fire_cells: list[Coordinate],
+    grid_size: int,
+) -> int:
+    """Count how many active-fire cells a widened run overlaps."""
+    fire_set = set(fire_cells)
+    return sum(
+        1
+        for cell in build_drop_corridor(drop_start, drop_end, grid_size, width=1)
+        if cell in fire_set
+    )
+
+
+def sanitize_run_to_containment(
+    *,
+    drop_start: Coordinate,
+    drop_end: Coordinate,
+    focus: Coordinate,
+    run_cells: list[Coordinate],
+    fire_cells: list[Coordinate],
+    wind: Coordinate,
+    grid_size: int,
+) -> tuple[Coordinate, Coordinate]:
+    """Force a run back toward containment if it still sits in the burning core."""
+    if not fire_cells:
+        return drop_start, drop_end
+
+    shifted_start, shifted_end = shift_run_toward_focus(
+        drop_start,
+        drop_end,
+        focus,
+        fire_cells,
+        grid_size,
+    )
+    best_start = shifted_start
+    best_end = shifted_end
+    best_overlap = run_fire_overlap(shifted_start, shifted_end, fire_cells, grid_size)
+    if best_overlap <= 2:
+        return best_start, best_end
+
+    requested_axis = step_direction(drop_start, drop_end)
+    run_axis = requested_axis if requested_axis != (0, 0) else choose_run_direction(run_cells or [focus], wind)
+    nearest_edge = min(run_cells or fire_cells, key=lambda cell: manhattan_distance(cell, focus))
+    outward = step_direction(nearest_edge, focus)
+    outward = outward if outward != (0, 0) else (-wind[0] or 1, -wind[1] or 0)
+
+    candidates: list[tuple[int, int, Coordinate, Coordinate]] = []
+    for shift_steps in range(0, 6):
+        shifted_focus = clamp_coordinate(
+            (focus[0] + outward[0] * shift_steps, focus[1] + outward[1] * shift_steps),
+            grid_size,
+        )
+        candidate_start, candidate_end = build_centered_run(
+            focus=shifted_focus,
+            run_axis=run_axis,
+            grid_size=grid_size,
+        )
+        overlap = run_fire_overlap(candidate_start, candidate_end, fire_cells, grid_size)
+        candidates.append(
+            (
+                overlap,
+                manhattan_distance(midpoint(candidate_start, candidate_end), focus),
+                candidate_start,
+                candidate_end,
+            )
+        )
+
+    best_overlap, _, best_start, best_end = min(candidates, key=lambda row: (row[0], row[1]))
+    if best_overlap < run_fire_overlap(shifted_start, shifted_end, fire_cells, grid_size):
+        return best_start, best_end
+    return shifted_start, shifted_end
+
+
 def build_fallback_air_support_mission(
     session_state: SessionState,
     seed: int,
@@ -353,26 +448,24 @@ def build_fallback_air_support_mission(
 
     if drop_start is None or drop_end is None:
         run_axis = choose_run_direction(run_cells or [focus], wind)
-        radius = 3
-        drop_start = clamp_coordinate(
-            (focus[0] - run_axis[0] * radius, focus[1] - run_axis[1] * radius),
-            grid_size,
-        )
-        drop_end = clamp_coordinate(
-            (focus[0] + run_axis[0] * radius, focus[1] + run_axis[1] * radius),
-            grid_size,
+        drop_start, drop_end = build_centered_run(
+            focus=focus,
+            run_axis=run_axis,
+            grid_size=grid_size,
         )
     else:
         drop_start = clamp_coordinate(drop_start, grid_size)
         drop_end = clamp_coordinate(drop_end, grid_size)
 
     if fire_cells:
-        drop_start, drop_end = shift_run_toward_focus(
-            drop_start,
-            drop_end,
-            focus,
-            fire_cells,
-            grid_size,
+        drop_start, drop_end = sanitize_run_to_containment(
+            drop_start=drop_start,
+            drop_end=drop_end,
+            focus=focus,
+            run_cells=run_cells,
+            fire_cells=fire_cells,
+            wind=wind,
+            grid_size=grid_size,
         )
 
     entry_direction = (

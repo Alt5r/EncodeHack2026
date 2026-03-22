@@ -41,7 +41,7 @@ export const PAYLOAD_SETTINGS: Record<AirSupportPayload, {
 const MISSION_PROGRESS_PER_SECOND: Record<AirSupportPhase, number> = {
   approach: 0.5,
   drop: 0.5,
-  exit: 0.32,
+  exit: 0.2,
   complete: 0,
 };
 
@@ -398,6 +398,89 @@ function shiftRunTowardFocus(
   return { dropStart: bestStart, dropEnd: bestEnd };
 }
 
+function buildCenteredRun(
+  focus: GridCoordinate,
+  runAxis: GridCoordinate,
+  gridSize: number,
+  radius: number = 3,
+): { dropStart: GridCoordinate; dropEnd: GridCoordinate } {
+  return {
+    dropStart: clampCoordinate(
+      { row: focus.row - runAxis.row * radius, col: focus.col - runAxis.col * radius },
+      gridSize,
+    ),
+    dropEnd: clampCoordinate(
+      { row: focus.row + runAxis.row * radius, col: focus.col + runAxis.col * radius },
+      gridSize,
+    ),
+  };
+}
+
+function getRunFireOverlap(
+  dropStart: GridCoordinate,
+  dropEnd: GridCoordinate,
+  fireCells: GridCoordinate[],
+  gridSize: number,
+): number {
+  const fireSet = new Set(fireCells.map((cell) => `${cell.row},${cell.col}`));
+  return buildDropCorridor(dropStart, dropEnd, gridSize, 1)
+    .filter((cell) => fireSet.has(`${cell.row},${cell.col}`)).length;
+}
+
+function sanitizeRunToContainment(
+  dropStart: GridCoordinate,
+  dropEnd: GridCoordinate,
+  focus: GridCoordinate,
+  runCells: GridCoordinate[],
+  fireCells: GridCoordinate[],
+  wind: GridCoordinate,
+  gridSize: number,
+): { dropStart: GridCoordinate; dropEnd: GridCoordinate } {
+  if (fireCells.length === 0) {
+    return { dropStart, dropEnd };
+  }
+
+  let best = shiftRunTowardFocus(dropStart, dropEnd, focus, fireCells, gridSize);
+  let bestOverlap = getRunFireOverlap(best.dropStart, best.dropEnd, fireCells, gridSize);
+  if (bestOverlap <= 2) {
+    return best;
+  }
+
+  const requestedAxis = stepDirection(dropStart, dropEnd);
+  const runAxis = requestedAxis.row !== 0 || requestedAxis.col !== 0
+    ? requestedAxis
+    : chooseRunDirection(runCells.length > 0 ? runCells : [focus], wind);
+  const nearestEdge = (runCells.length > 0 ? runCells : fireCells).reduce((currentBest, cell) =>
+    manhattanDistance(cell, focus) < manhattanDistance(currentBest, focus) ? cell : currentBest,
+  );
+  const outward = stepDirection(nearestEdge, focus);
+  const outwardRow = outward.row || (-wind.row || 1);
+  const outwardCol = outward.col || (-wind.col || 0);
+
+  for (let shiftSteps = 0; shiftSteps <= 5; shiftSteps += 1) {
+    const shiftedFocus = clampCoordinate(
+      {
+        row: focus.row + outwardRow * shiftSteps,
+        col: focus.col + outwardCol * shiftSteps,
+      },
+      gridSize,
+    );
+    const candidate = buildCenteredRun(shiftedFocus, runAxis, gridSize);
+    const overlap = getRunFireOverlap(candidate.dropStart, candidate.dropEnd, fireCells, gridSize);
+    if (
+      overlap < bestOverlap
+      || (overlap === bestOverlap
+        && manhattanDistance(midpoint(candidate.dropStart, candidate.dropEnd), focus)
+          < manhattanDistance(midpoint(best.dropStart, best.dropEnd), focus))
+    ) {
+      best = candidate;
+      bestOverlap = overlap;
+    }
+  }
+
+  return best;
+}
+
 export function buildFallbackAirSupportMission(
   state: SessionState,
   seed: number,
@@ -409,16 +492,16 @@ export function buildFallbackAirSupportMission(
   const { focus, runCells } = chooseContainmentFocus(state, fireCells);
   const wind = getWindVector(state.wind.direction);
   const runAxis = chooseRunDirection(runCells, wind);
-  const radius = 3;
-  let dropStart = clampCoordinate(
-    { row: focus.row - runAxis.row * radius, col: focus.col - runAxis.col * radius },
+  let { dropStart, dropEnd } = buildCenteredRun(focus, runAxis, state.grid_size);
+  ({ dropStart, dropEnd } = sanitizeRunToContainment(
+    dropStart,
+    dropEnd,
+    focus,
+    runCells,
+    fireCells,
+    wind,
     state.grid_size,
-  );
-  let dropEnd = clampCoordinate(
-    { row: focus.row + runAxis.row * radius, col: focus.col + runAxis.col * radius },
-    state.grid_size,
-  );
-  ({ dropStart, dropEnd } = shiftRunTowardFocus(dropStart, dropEnd, focus, fireCells, state.grid_size));
+  ));
   const entryDirection = { row: -(wind.row || runAxis.row || 1), col: -(wind.col || runAxis.col || 0) };
   const entry = extendPoint(
     dropStart,

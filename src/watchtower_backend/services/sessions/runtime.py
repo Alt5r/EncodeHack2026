@@ -114,6 +114,7 @@ class SessionRuntime:
             self._session_state.status = status
 
         self._stop_event.set()
+        await self._close_radio_session()
         if self._planner_task is not None:
             self._planner_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -222,6 +223,7 @@ class SessionRuntime:
             await self._emit_snapshot()
 
             if self._session_state.status in {GameStatus.WON, GameStatus.LOST}:
+                await self._close_radio_session()
                 await self._emit_event(
                     event_type="session.completed",
                     payload={
@@ -232,6 +234,13 @@ class SessionRuntime:
                 return
 
             await asyncio.sleep(self._tick_interval_seconds)
+
+    async def _close_radio_session(self) -> None:
+        """Signal optional radio sinks to stop emitting for this finished session."""
+        close_session = getattr(self._radio_sink, "close_session", None)
+        if close_session is None:
+            return
+        await close_session(self._session_state.id)
 
     async def _emit_planner_messages(self, commands: list[UnitCommand]) -> None:
         """Publish radio transcript for planner decisions."""

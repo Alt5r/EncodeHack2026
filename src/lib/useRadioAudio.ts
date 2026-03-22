@@ -17,6 +17,7 @@ interface UseRadioAudioReturn {
   analyserNode: AnalyserNode | null;
   enqueueAudio: (entry: QueueEntry) => void;
   initAudio: () => void;
+  stopAudio: () => void;
 }
 
 /**
@@ -36,6 +37,9 @@ export function useRadioAudio(): UseRadioAudioReturn {
   const masterGainRef = useRef<GainNode | null>(null);
   const queueRef = useRef<QueueEntry[]>([]);
   const processingRef = useRef(false);
+  const queueGenerationRef = useRef(0);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const cancelCurrentPlaybackRef = useRef<(() => void) | null>(null);
 
   // ---------------------------------------------------------------------------
   // Lazy AudioContext init (must happen from a user gesture)
@@ -143,24 +147,53 @@ export function useRadioAudio(): UseRadioAudioReturn {
 
     return new Promise((resolve, reject) => {
       const audio = new Audio();
+      let settled = false;
       audio.crossOrigin = 'anonymous';
       audio.src = audioUrl;
+      currentAudioRef.current = audio;
 
       const source = ctx.createMediaElementSource(audio);
       source.connect(masterGain);
 
-      audio.onended = () => {
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        audio.onended = null;
+        audio.onerror = null;
+        if (currentAudioRef.current === audio) {
+          currentAudioRef.current = null;
+        }
+        if (cancelCurrentPlaybackRef.current === cancelPlayback) {
+          cancelCurrentPlaybackRef.current = null;
+        }
         source.disconnect();
+      };
+
+      const cancelPlayback = () => {
+        try {
+          audio.pause();
+          audio.removeAttribute('src');
+          audio.load();
+        } catch {
+          // Best-effort teardown only.
+        }
+        cleanup();
+        resolve();
+      };
+      cancelCurrentPlaybackRef.current = cancelPlayback;
+
+      audio.onended = () => {
+        cleanup();
         resolve();
       };
 
       audio.onerror = () => {
-        source.disconnect();
+        cleanup();
         reject(new Error(`Failed to load audio: ${audioUrl}`));
       };
 
       audio.play().catch((err) => {
-        source.disconnect();
+        cleanup();
         reject(err);
       });
     });
@@ -172,8 +205,10 @@ export function useRadioAudio(): UseRadioAudioReturn {
   const processQueue = useCallback(async () => {
     if (processingRef.current) return;
     processingRef.current = true;
+    const generation = queueGenerationRef.current;
 
     while (queueRef.current.length > 0) {
+      if (generation !== queueGenerationRef.current) break;
       const entry = queueRef.current.shift()!;
 
       setIsPlaying(true);
@@ -182,7 +217,9 @@ export function useRadioAudio(): UseRadioAudioReturn {
 
       try {
         await playCrackle(200);  // crackle-in
+        if (generation !== queueGenerationRef.current) break;
         await playVoice(entry.audioUrl);
+        if (generation !== queueGenerationRef.current) break;
         await playCrackle(150);  // crackle-out
       } catch {
         // If audio fails, skip this entry and continue
@@ -203,6 +240,18 @@ export function useRadioAudio(): UseRadioAudioReturn {
     processQueue();
   }, [processQueue]);
 
+  const stopAudio = useCallback(() => {
+    queueGenerationRef.current += 1;
+    queueRef.current = [];
+    cancelCurrentPlaybackRef.current?.();
+    cancelCurrentPlaybackRef.current = null;
+    currentAudioRef.current = null;
+    setIsPlaying(false);
+    setCurrentSpeaker(null);
+    setCurrentVoiceKey(null);
+    processingRef.current = false;
+  }, []);
+
   return {
     isPlaying,
     currentSpeaker,
@@ -210,5 +259,6 @@ export function useRadioAudio(): UseRadioAudioReturn {
     analyserNode,
     enqueueAudio,
     initAudio,
+    stopAudio,
   };
 }
