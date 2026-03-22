@@ -58,10 +58,10 @@ export const MOCK_STATE: SessionState = {
   status: 'running',
   cells: [...fireCells, ...burnedCells, ...suppressedCells, ...firebreakCells],
   units: [
-    { id: 'heli-alpha', type: 'helicopter', label: 'Alpha', row: 9, col: 10, water_capacity: 6, water_remaining: 4, status_text: 'moving', target: { row: 6, col: 7 } },
-    { id: 'heli-bravo', type: 'helicopter', label: 'Bravo', row: 12, col: 14, water_capacity: 6, water_remaining: 6, status_text: 'ready', target: null },
-    { id: 'ground-1', type: 'ground_crew', label: 'Ground 1', row: 23, col: 22, firebreak_strength: 3, status_text: 'laying firebreak', target: { row: 22, col: 23 } },
-    { id: 'ground-2', type: 'ground_crew', label: 'Ground 2', row: 24, col: 24, firebreak_strength: 3, status_text: 'ready', target: null },
+    { id: 'heli-alpha', type: 'helicopter', label: 'Alpha', row: 9, col: 10, is_active: true, water_capacity: 6, water_remaining: 4, status_text: 'moving', target: { row: 6, col: 7 } },
+    { id: 'heli-bravo', type: 'helicopter', label: 'Bravo', row: 12, col: 14, is_active: true, water_capacity: 6, water_remaining: 6, status_text: 'ready', target: null },
+    { id: 'ground-1', type: 'ground_crew', label: 'Ground 1', row: 23, col: 22, is_active: true, firebreak_strength: 3, status_text: 'laying firebreak', target: { row: 22, col: 23 } },
+    { id: 'ground-2', type: 'ground_crew', label: 'Ground 2', row: 24, col: 24, is_active: true, firebreak_strength: 3, status_text: 'ready', target: null },
   ],
   villages: [
     { row: 38, col: 40, size: 14 },  // the village — one large settlement to protect

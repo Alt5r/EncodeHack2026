@@ -51,6 +51,20 @@ interface MissionAnimationState {
   updatedAt: number;
 }
 
+interface UnitAnimationState {
+  fromRow: number;
+  fromCol: number;
+  toRow: number;
+  toCol: number;
+  updatedAt: number;
+  durationMs: number;
+}
+
+const UNIT_MOVE_DURATION_MS: Record<Unit['type'], number> = {
+  helicopter: 1000,
+  ground_crew: 1000,
+};
+
 export default function MapCanvas({ params, gameState, showGrid, selectedCell, onCellSelect }: MapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const terrainCacheRef = useRef<HTMLCanvasElement | null>(null);
@@ -58,6 +72,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
   const cachedSignatureRef = useRef<string | null>(null);
   const hoveredCellRef = useRef<{ row: number; col: number } | null>(null);
   const missionAnimationRef = useRef<Map<string, MissionAnimationState>>(new Map());
+  const unitAnimationRef = useRef<Map<string, UnitAnimationState>>(new Map());
 
   // Zoom & pan state (refs to avoid re-renders)
   const zoomRef = useRef(1);
@@ -406,14 +421,19 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
       drawVillage(ctx, village, mapX, mapY, cellW, cellH);
     }
 
+    const renderedUnits = state.units.map((unit) => ({
+      unit,
+      position: getUnitRenderPosition(unit, time, unitAnimationRef.current.get(unit.id)),
+    }));
+
     // ── Unit routes ──
-    for (const unit of state.units) {
-      drawUnitRoute(ctx, unit, mapX, mapY, cellW, cellH);
+    for (const { unit, position } of renderedUnits) {
+      drawUnitRoute(ctx, unit, position, mapX, mapY, cellW, cellH);
     }
 
     // ── Units ──
-    for (const unit of state.units) {
-      drawUnit(ctx, unit, mapX, mapY, cellW, cellH);
+    for (const { unit, position } of renderedUnits) {
+      drawUnit(ctx, unit, position, mapX, mapY, cellW, cellH);
     }
 
     // ── Air support missions ──
@@ -592,6 +612,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
   useEffect(() => {
     if (!gameState) {
       missionAnimationRef.current.clear();
+      unitAnimationRef.current.clear();
       return;
     }
 
@@ -613,15 +634,47 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
         missionAnimationRef.current.delete(missionId);
       }
     }
+
+    const activeUnitIds = new Set<string>();
+    for (const unit of gameState.units) {
+      activeUnitIds.add(unit.id);
+      const existing = unitAnimationRef.current.get(unit.id);
+      if (!existing) {
+        unitAnimationRef.current.set(unit.id, {
+          fromRow: unit.row,
+          fromCol: unit.col,
+          toRow: unit.row,
+          toCol: unit.col,
+          updatedAt: now,
+          durationMs: UNIT_MOVE_DURATION_MS[unit.type],
+        });
+        continue;
+      }
+
+      if (existing.toRow !== unit.row || existing.toCol !== unit.col) {
+        const currentPosition = getAnimationCoordinate(existing, now);
+        unitAnimationRef.current.set(unit.id, {
+          fromRow: currentPosition.row,
+          fromCol: currentPosition.col,
+          toRow: unit.row,
+          toCol: unit.col,
+          updatedAt: now,
+          durationMs: UNIT_MOVE_DURATION_MS[unit.type],
+        });
+      }
+    }
+    for (const unitId of Array.from(unitAnimationRef.current.keys())) {
+      if (!activeUnitIds.has(unitId)) {
+        unitAnimationRef.current.delete(unitId);
+      }
+    }
   }, [gameState]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const hasAnimatedOverlay =
-      !!gameState?.cells.some(c => c.state === 'fire') ||
-      (gameState?.airSupportMissions.length ?? 0) > 0;
+    const hasAnimatedOverlay = !!gameState;
     let animId: number | null = null;
 
     const redraw = () => {
@@ -927,14 +980,19 @@ function drawTreatedCell(
 function drawUnit(
   ctx: CanvasRenderingContext2D,
   unit: Unit,
+  position: GridCoordinate,
   mapX: number, mapY: number,
   cellW: number, cellH: number,
 ) {
-  const cx = mapX + (unit.col + 0.5) * cellW;
-  const cy = mapY + (unit.row + 0.5) * cellH;
+  const cx = mapX + (position.col + 0.5) * cellW;
+  const cy = mapY + (position.row + 0.5) * cellH;
   const r = Math.min(cellW, cellH) * 0.35;
+  const isInactive = !unit.is_active;
 
   ctx.save();
+  if (isInactive) {
+    ctx.globalAlpha = 0.45;
+  }
 
   switch (unit.type) {
     case 'helicopter': {
@@ -982,8 +1040,20 @@ function drawUnit(
     }
   }
 
+  if (isInactive) {
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = 'rgba(220, 97, 76, 0.9)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(cx - r * 0.7, cy - r * 0.7);
+    ctx.lineTo(cx + r * 0.7, cy + r * 0.7);
+    ctx.moveTo(cx + r * 0.7, cy - r * 0.7);
+    ctx.lineTo(cx - r * 0.7, cy + r * 0.7);
+    ctx.stroke();
+  }
+
   // Label underneath
-  ctx.fillStyle = GAME_PALETTE.accentStrong;
+  ctx.fillStyle = isInactive ? 'rgba(220, 97, 76, 0.9)' : GAME_PALETTE.accentStrong;
   ctx.font = 'bold 9px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -995,15 +1065,17 @@ function drawUnit(
 function drawUnitRoute(
   ctx: CanvasRenderingContext2D,
   unit: Unit,
+  position: GridCoordinate,
   mapX: number,
   mapY: number,
   cellW: number,
   cellH: number,
 ) {
+  if (!unit.is_active) return;
   if (!unit.target) return;
   if (unit.target.row === unit.row && unit.target.col === unit.col) return;
 
-  const start = toCanvasPoint({ row: unit.row, col: unit.col }, mapX, mapY, cellW, cellH);
+  const start = toCanvasPoint(position, mapX, mapY, cellW, cellH);
   const end = toCanvasPoint(unit.target, mapX, mapY, cellW, cellH);
   const strokeStyle = unit.type === 'helicopter'
     ? 'rgba(136, 170, 204, 0.72)'
@@ -1043,6 +1115,27 @@ function toCanvasPoint(
     x: mapX + (coordinate.col + 0.5) * cellW,
     y: mapY + (coordinate.row + 0.5) * cellH,
   };
+}
+
+function getAnimationCoordinate(animationState: UnitAnimationState, time: number): GridCoordinate {
+  const progress = animationState.durationMs <= 0
+    ? 1
+    : Math.max(0, Math.min(1, (time - animationState.updatedAt) / animationState.durationMs));
+  return {
+    row: animationState.fromRow + (animationState.toRow - animationState.fromRow) * progress,
+    col: animationState.fromCol + (animationState.toCol - animationState.fromCol) * progress,
+  };
+}
+
+function getUnitRenderPosition(
+  unit: Unit,
+  time: number,
+  animationState: UnitAnimationState | undefined,
+): GridCoordinate {
+  if (!animationState) {
+    return { row: unit.row, col: unit.col };
+  }
+  return getAnimationCoordinate(animationState, time);
 }
 
 function drawAircraftSilhouette(

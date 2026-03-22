@@ -76,6 +76,7 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
       type: u.unit_type as 'helicopter' | 'ground_crew',
       label: u.label,
       ...toRowCol(u.position),
+      is_active: u.is_active ?? true,
       target: u.target ? toRowCol(u.target) : null,
       water_capacity: u.water_capacity,
       water_remaining: u.water_remaining,

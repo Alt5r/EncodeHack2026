@@ -29,6 +29,17 @@ RUN_DIRECTION_CANDIDATES: tuple[Coordinate, ...] = (
     (1, -1),
 )
 
+NEIGHBOUR_OFFSETS: tuple[Coordinate, ...] = (
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, 1),
+    (1, -1),
+    (-1, 1),
+    (-1, -1),
+)
+
 
 @dataclass(frozen=True)
 class PayloadSettings:
@@ -56,7 +67,7 @@ PAYLOAD_SETTINGS: dict[AirSupportPayload, PayloadSettings] = {
 MISSION_PROGRESS_PER_TICK: dict[AirSupportPhase, float] = {
     AirSupportPhase.APPROACH: 0.5,
     AirSupportPhase.DROP: 0.5,
-    AirSupportPhase.EXIT: 0.42,
+    AirSupportPhase.EXIT: 0.32,
     AirSupportPhase.COMPLETE: 0.0,
 }
 
@@ -155,6 +166,19 @@ def off_map_distance(grid_size: int, multiplier: int = 1) -> int:
     return grid_size * multiplier + 8
 
 
+def manhattan_distance(a: Coordinate, b: Coordinate) -> int:
+    """Return Manhattan distance between two cells."""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def midpoint(start: Coordinate, end: Coordinate) -> Coordinate:
+    """Return the integer midpoint of a run."""
+    return (
+        round((start[0] + end[0]) / 2),
+        round((start[1] + end[1]) / 2),
+    )
+
+
 def rasterize_line(start: Coordinate, end: Coordinate) -> list[Coordinate]:
     """Rasterize a straight line across grid cells."""
     row, col = start
@@ -195,6 +219,119 @@ def build_drop_corridor(
     return list(cells.keys())
 
 
+def fire_edge_and_containment_cells(
+    fire_cells: list[Coordinate],
+    grid_size: int,
+) -> tuple[list[Coordinate], list[Coordinate]]:
+    """Return burning edge cells and adjacent non-burning containment cells."""
+    fire_set = set(fire_cells)
+    edge_cells: list[Coordinate] = []
+    containment_cells: dict[Coordinate, None] = {}
+
+    for cell in fire_cells:
+        is_edge = False
+        for delta_row, delta_col in NEIGHBOUR_OFFSETS:
+            next_row = cell[0] + delta_row
+            next_col = cell[1] + delta_col
+            if not (0 <= next_row < grid_size and 0 <= next_col < grid_size):
+                continue
+            neighbour = (next_row, next_col)
+            if neighbour in fire_set:
+                continue
+            is_edge = True
+            containment_cells[neighbour] = None
+        if is_edge:
+            edge_cells.append(cell)
+
+    return edge_cells, list(containment_cells.keys())
+
+
+def choose_containment_focus(
+    session_state: SessionState,
+    fire_cells: list[Coordinate],
+    focus_target: Coordinate | None,
+) -> tuple[Coordinate, list[Coordinate]]:
+    """Choose a containment focus just outside the active fire front."""
+    grid_size = session_state.grid_size
+    if not fire_cells:
+        focus = clamp_coordinate(focus_target or (grid_size // 2, grid_size // 2), grid_size)
+        return focus, [focus]
+
+    edge_cells, containment_cells = fire_edge_and_containment_cells(fire_cells, grid_size)
+    village_anchor = session_state.village.top_left
+    run_cells = edge_cells or fire_cells
+    anchor = clamp_coordinate(
+        focus_target or min(run_cells, key=lambda cell: manhattan_distance(cell, village_anchor)),
+        grid_size,
+    )
+
+    if not containment_cells:
+        return anchor, run_cells
+
+    nearest_edge = min(run_cells, key=lambda cell: manhattan_distance(cell, anchor))
+    nearby_containment = [
+        cell
+        for cell in containment_cells
+        if max(abs(cell[0] - nearest_edge[0]), abs(cell[1] - nearest_edge[1])) <= 2
+    ]
+    focus = min(
+        nearby_containment or containment_cells,
+        key=lambda cell: (
+            manhattan_distance(cell, anchor),
+            manhattan_distance(cell, village_anchor),
+        ),
+    )
+
+    fire_set = set(fire_cells)
+    outward = step_direction(nearest_edge, focus)
+    nudged = clamp_coordinate((focus[0] + outward[0], focus[1] + outward[1]), grid_size)
+    if nudged not in fire_set:
+        focus = nudged
+
+    return focus, run_cells
+
+
+def shift_run_toward_focus(
+    drop_start: Coordinate,
+    drop_end: Coordinate,
+    focus: Coordinate,
+    fire_cells: list[Coordinate],
+    grid_size: int,
+) -> tuple[Coordinate, Coordinate]:
+    """Nudge a run toward the containment focus when it overlaps too much active fire."""
+    fire_set = set(fire_cells)
+    shift = step_direction(midpoint(drop_start, drop_end), focus)
+    if shift == (0, 0):
+        return drop_start, drop_end
+
+    def score_run(start: Coordinate, end: Coordinate) -> tuple[int, int]:
+        overlap = sum(
+            1 for cell in build_drop_corridor(start, end, grid_size, width=1) if cell in fire_set
+        )
+        return (overlap, manhattan_distance(midpoint(start, end), focus))
+
+    best_start = drop_start
+    best_end = drop_end
+    best_score = score_run(drop_start, drop_end)
+
+    for steps in range(1, 4):
+        candidate_start = clamp_coordinate(
+            (drop_start[0] + shift[0] * steps, drop_start[1] + shift[1] * steps),
+            grid_size,
+        )
+        candidate_end = clamp_coordinate(
+            (drop_end[0] + shift[0] * steps, drop_end[1] + shift[1] * steps),
+            grid_size,
+        )
+        candidate_score = score_run(candidate_start, candidate_end)
+        if candidate_score < best_score:
+            best_start = candidate_start
+            best_end = candidate_end
+            best_score = candidate_score
+
+    return best_start, best_end
+
+
 def build_fallback_air_support_mission(
     session_state: SessionState,
     seed: int,
@@ -212,16 +349,10 @@ def build_fallback_air_support_mission(
 
     grid_size = session_state.grid_size
     wind = wind_vector(session_state.wind.direction)
-    focus = focus_target
-    if focus is None:
-        focus = (
-            round(sum(cell[0] for cell in fire_cells) / len(fire_cells)),
-            round(sum(cell[1] for cell in fire_cells) / len(fire_cells)),
-        )
-    focus = clamp_coordinate(focus, grid_size)
+    focus, run_cells = choose_containment_focus(session_state, fire_cells, focus_target)
 
     if drop_start is None or drop_end is None:
-        run_axis = choose_run_direction(fire_cells or [focus], wind)
+        run_axis = choose_run_direction(run_cells or [focus], wind)
         radius = 3
         drop_start = clamp_coordinate(
             (focus[0] - run_axis[0] * radius, focus[1] - run_axis[1] * radius),
@@ -234,6 +365,15 @@ def build_fallback_air_support_mission(
     else:
         drop_start = clamp_coordinate(drop_start, grid_size)
         drop_end = clamp_coordinate(drop_end, grid_size)
+
+    if fire_cells:
+        drop_start, drop_end = shift_run_toward_focus(
+            drop_start,
+            drop_end,
+            focus,
+            fire_cells,
+            grid_size,
+        )
 
     entry_direction = (
         -(wind[0] or step_direction(drop_start, drop_end)[0] or 1),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from heapq import heappop, heappush
 from random import Random
 
 from watchtower_backend.core.errors import CommandValidationError
@@ -85,6 +86,21 @@ _BASE_RATE = 0.096
 _MAX_SPREAD_PROB = 0.65
 _DIAGONAL_PENALTY = 0.7
 
+# --- Unit movement (kept separate from fire timing) ---
+_UNIT_MOVE_STEPS_PER_TICK: dict[UnitType, int] = {
+    UnitType.HELICOPTER: 1,
+    UnitType.GROUND_CREW: 2,
+}
+
+_GROUND_CREW_MOVE_BUDGET_PER_TICK = 2.6
+_GROUND_CREW_DIAGONAL_COST = 0.15
+_GROUND_CREW_MAX_SLOPE_COST = 0.75
+_GROUND_CREW_FIRE_EDGE_PENALTY = 0.9
+_GROUND_CREW_FIRE_NEARBY_PENALTY = 0.3
+_GROUND_CREW_WATER_EDGE_PENALTY = 0.55
+_GROUND_CREW_WATER_NEARBY_PENALTY = 0.2
+_GROUND_CREW_MAX_STEP_COST = 2.35
+
 # 8-directional offsets: (dx, dy, is_diagonal)
 _NEIGHBOURS: list[tuple[int, int, bool]] = [
     (1, 0, False),
@@ -135,8 +151,16 @@ class SimulationEngine:
         else:
             self._terrain_grid = self._generate_fallback_terrain()
 
+        self._water_cells: set[Coordinate] = {
+            (row, col)
+            for row in range(self._grid_size)
+            for col in range(self._grid_size)
+            if self._terrain_grid[row][col].water != WaterType.NONE
+        }
+
         # Precompute water proximity moisture boost
         self._moisture_boost = self._compute_moisture_boost()
+        self._ground_water_penalty = self._compute_ground_water_penalty()
 
         # Initialize internal fire state for existing fire cells
         self._fire_states: dict[Coordinate, _CellFireState] = {}
@@ -166,6 +190,7 @@ class SimulationEngine:
         self._session_state.version += 1
 
         mutation_records: list[dict[str, object]] = []
+        mutation_records.extend(self._resolve_ground_crew_casualties())
         self._new_air_support_mission_ids = set()
         for command in commands:
             try:
@@ -180,6 +205,7 @@ class SimulationEngine:
                     }
                 )
 
+        mutation_records.extend(self._advance_units())
         self._decay_treated_cells()
         mutation_records.extend(
             self._advance_air_support_missions(
@@ -199,6 +225,7 @@ class SimulationEngine:
                 "cells": new_fire_cells,
                 "burned_out": burned_out,
             })
+        mutation_records.extend(self._resolve_ground_crew_casualties())
 
         self._update_score()
         self._update_game_status()
@@ -223,20 +250,14 @@ class SimulationEngine:
 
     def _compute_moisture_boost(self) -> dict[Coordinate, float]:
         """Precompute moisture boost from water proximity."""
-        water_cells: set[Coordinate] = set()
-        for row in range(self._grid_size):
-            for col in range(self._grid_size):
-                if self._terrain_grid[row][col].water != WaterType.NONE:
-                    water_cells.add((row, col))
-
         boost: dict[Coordinate, float] = {}
-        for wx, wy in water_cells:
+        for wx, wy in self._water_cells:
             for dx in range(-2, 3):
                 for dy in range(-2, 3):
                     nx, ny = wx + dx, wy + dy
                     if 0 <= nx < self._grid_size and 0 <= ny < self._grid_size:
                         coord = (nx, ny)
-                        if coord in water_cells:
+                        if coord in self._water_cells:
                             continue
                         dist = max(abs(dx), abs(dy))
                         if dist == 1:
@@ -244,6 +265,31 @@ class SimulationEngine:
                         elif dist == 2:
                             boost[coord] = max(boost.get(coord, 0.0), 0.5)
         return boost
+
+    def _compute_ground_water_penalty(self) -> dict[Coordinate, float]:
+        """Precompute traversal slowdowns for cells near water."""
+        penalties: dict[Coordinate, float] = {}
+        for wx, wy in self._water_cells:
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    nx, ny = wx + dx, wy + dy
+                    if not (0 <= nx < self._grid_size and 0 <= ny < self._grid_size):
+                        continue
+                    coord = (nx, ny)
+                    if coord in self._water_cells:
+                        continue
+                    dist = max(abs(dx), abs(dy))
+                    if dist == 1:
+                        penalties[coord] = max(
+                            penalties.get(coord, 0.0),
+                            _GROUND_CREW_WATER_EDGE_PENALTY,
+                        )
+                    elif dist == 2:
+                        penalties[coord] = max(
+                            penalties.get(coord, 0.0),
+                            _GROUND_CREW_WATER_NEARBY_PENALTY,
+                        )
+        return penalties
 
     def _get_terrain(self, coord: Coordinate) -> TerrainCell:
         """Return the terrain cell at a coordinate."""
@@ -509,16 +555,24 @@ class SimulationEngine:
         target = self._clamp_coordinate(command.target)
         match command.action:
             case CommandAction.MOVE:
-                unit.position = self._move_towards(origin=unit.position, target=target)
+                if unit.unit_type is UnitType.GROUND_CREW and target in self._session_state.fire_cells:
+                    raise CommandValidationError("Ground crews cannot move into active fire.")
+                if unit.unit_type is UnitType.GROUND_CREW and not self._ground_target_reachable(
+                    origin=unit.position,
+                    target=target,
+                ):
+                    raise CommandValidationError(
+                        "Ground crews cannot safely reach that target without crossing fire or water."
+                    )
                 unit.target = target
                 unit.status_text = "moving"
-                return [{"kind": "unit_moved", "unit_id": unit.id, "position": unit.position}]
+                return []
             case CommandAction.DROP_WATER:
                 if unit.unit_type is not UnitType.HELICOPTER:
                     raise CommandValidationError("Only helicopters can drop water.")
                 if unit.water_remaining <= 0:
                     raise CommandValidationError("Helicopter is out of water.")
-                unit.position = self._move_towards(origin=unit.position, target=target)
+                unit.target = target
                 suppressed = self._suppress_fire(center=target, radius=2)
                 unit.water_remaining -= 1
                 unit.status_text = "suppressing"
@@ -533,7 +587,16 @@ class SimulationEngine:
             case CommandAction.CREATE_FIREBREAK:
                 if unit.unit_type is not UnitType.GROUND_CREW:
                     raise CommandValidationError("Only ground crews can create firebreaks.")
-                unit.position = self._move_towards(origin=unit.position, target=target)
+                preview_cells = self._preview_firebreak(center=target)
+                if any(cell in self._session_state.fire_cells for cell in preview_cells):
+                    raise CommandValidationError(
+                        "Ground crews cannot cut firebreaks through active fire."
+                    )
+                if not self._ground_target_reachable(origin=unit.position, target=target):
+                    raise CommandValidationError(
+                        "Ground crews cannot safely reach that firebreak position."
+                    )
+                unit.target = target
                 cells = self._create_firebreak(center=target)
                 unit.status_text = "laying firebreak"
                 return [
@@ -545,6 +608,7 @@ class SimulationEngine:
                     }
                 ]
             case CommandAction.HOLD_POSITION:
+                unit.target = None
                 unit.status_text = "holding"
                 return [{"kind": "unit_holding", "unit_id": unit.id, "position": unit.position}]
             case CommandAction.CALL_AIR_SUPPORT:
@@ -576,7 +640,10 @@ class SimulationEngine:
                         "kind": "air_support_dispatched",
                         "unit_id": unit.id,
                         "mission_id": mission.id,
+                        "aircraft_model": mission.aircraft_model,
                         "payload_type": mission.payload_type.value,
+                        "drop_start": mission.drop_start,
+                        "drop_end": mission.drop_end,
                         "target": target,
                     }
                 ]
@@ -682,7 +749,10 @@ class SimulationEngine:
         return {
             "kind": "air_support_drop",
             "mission_id": mission.id,
+            "aircraft_model": mission.aircraft_model,
             "payload_type": mission.payload_type.value,
+            "drop_start": mission.drop_start,
+            "drop_end": mission.drop_end,
             "cells": corridor,
             "suppressed": sorted(set(suppressed)),
             "cooled": sorted(set(cooled)),
@@ -723,13 +793,79 @@ class SimulationEngine:
                     next_missions.append(mission.model_copy(update={"progress": progress}))
                 continue
 
-            if mission.phase is AirSupportPhase.EXIT and progress < 1.0:
-                next_missions.append(mission.model_copy(update={"progress": progress}))
+            if mission.phase is AirSupportPhase.EXIT:
+                if progress < 1.0:
+                    next_missions.append(mission.model_copy(update={"progress": progress}))
+                else:
+                    mutations.append(
+                        {
+                            "kind": "air_support_completed",
+                            "mission_id": mission.id,
+                            "aircraft_model": mission.aircraft_model,
+                            "payload_type": mission.payload_type.value,
+                            "drop_start": mission.drop_start,
+                            "drop_end": mission.drop_end,
+                        }
+                    )
 
         self._session_state.air_support_missions = next_missions
         tower = next((unit for unit in self._session_state.units if unit.unit_type is UnitType.ORCHESTRATOR), None)
         if tower is not None and not next_missions:
             tower.status_text = "ready"
+        return mutations
+
+    def _advance_units(self) -> list[dict[str, object]]:
+        """Advance mobile units independently from the fire tick rate."""
+        mutations: list[dict[str, object]] = []
+        fire_cells = set(self._session_state.fire_cells)
+        for unit in self._session_state.units:
+            if (
+                unit.unit_type is UnitType.ORCHESTRATOR
+                or not unit.is_active
+                or unit.target is None
+            ):
+                continue
+            if unit.status_text == "holding":
+                unit.target = None
+                continue
+            if unit.position == unit.target:
+                if unit.status_text == "moving":
+                    unit.status_text = "ready"
+                    unit.target = None
+                continue
+
+            if unit.unit_type is UnitType.GROUND_CREW:
+                if not self._is_ground_cell_passable(unit.target, fire_cells):
+                    unit.target = None
+                    unit.status_text = "holding"
+                    continue
+                next_position = self._move_ground_towards(
+                    origin=unit.position,
+                    target=unit.target,
+                    active_fire=fire_cells,
+                )
+                if next_position == unit.position and not self._ground_target_reachable(
+                    origin=unit.position,
+                    target=unit.target,
+                ):
+                    unit.target = None
+                    unit.status_text = "holding"
+                    continue
+            else:
+                next_position = self._move_towards(
+                    origin=unit.position,
+                    target=unit.target,
+                    max_steps=self._move_steps_for_unit(unit),
+                )
+            if next_position == unit.position:
+                continue
+
+            unit.position = next_position
+            mutations.append({"kind": "unit_moved", "unit_id": unit.id, "position": unit.position})
+
+            if unit.position == unit.target and unit.status_text == "moving":
+                unit.status_text = "ready"
+                unit.target = None
         return mutations
 
     def _get_unit(self, unit_id: str) -> UnitState:
@@ -746,22 +882,222 @@ class SimulationEngine:
         """
         for unit in self._session_state.units:
             if unit.id == unit_id:
+                if not unit.is_active:
+                    raise CommandValidationError(f"Unit {unit_id} is no longer active.")
                 return unit
         raise CommandValidationError(f"Unit {unit_id} does not exist.")
 
-    def _move_towards(self, origin: Coordinate, target: Coordinate) -> Coordinate:
-        """Move one step toward a target coordinate.
+    def _resolve_ground_crew_casualties(self) -> list[dict[str, object]]:
+        """Kill any active ground crews that are currently inside live fire."""
+        fire_cells = set(self._session_state.fire_cells)
+        casualties: list[dict[str, object]] = []
+        for unit in self._session_state.units:
+            if (
+                unit.unit_type is not UnitType.GROUND_CREW
+                or not unit.is_active
+                or unit.position not in fire_cells
+            ):
+                continue
+            unit.is_active = False
+            unit.target = None
+            unit.status_text = "lost"
+            casualties.append(
+                {
+                    "kind": "unit_killed",
+                    "unit_id": unit.id,
+                    "label": unit.label,
+                    "position": unit.position,
+                }
+            )
+        return casualties
+
+    def _move_towards(
+        self,
+        origin: Coordinate,
+        target: Coordinate,
+        *,
+        max_steps: int = 1,
+    ) -> Coordinate:
+        """Move up to ``max_steps`` steps toward a target coordinate.
 
         Args:
             origin: Starting coordinate.
             target: Destination coordinate.
+            max_steps: Maximum grid steps this move may cover.
 
         Returns:
-            New coordinate after one movement step.
+            New coordinate after movement.
         """
-        next_x = origin[0] + self._sign(target[0] - origin[0])
-        next_y = origin[1] + self._sign(target[1] - origin[1])
-        return self._clamp_coordinate((next_x, next_y))
+        row, col = origin
+        for _ in range(max_steps):
+            if (row, col) == target:
+                break
+            row += self._sign(target[0] - row)
+            col += self._sign(target[1] - col)
+        return self._clamp_coordinate((row, col))
+
+    def _move_steps_for_unit(self, unit: UnitState) -> int:
+        """Return the number of grid steps a unit can travel in one tick."""
+        return _UNIT_MOVE_STEPS_PER_TICK.get(unit.unit_type, 0)
+
+    def _move_ground_towards(
+        self,
+        origin: Coordinate,
+        target: Coordinate,
+        *,
+        active_fire: set[Coordinate],
+    ) -> Coordinate:
+        """Move a ground crew along its safest available path."""
+        path = self._find_ground_path(origin=origin, target=target, active_fire=active_fire)
+        if path is None or len(path) <= 1:
+            return origin
+
+        budget_remaining = _GROUND_CREW_MOVE_BUDGET_PER_TICK
+        current = origin
+        for next_cell in path[1:]:
+            diagonal = current[0] != next_cell[0] and current[1] != next_cell[1]
+            step_cost = self._ground_step_cost(
+                current=current,
+                next_cell=next_cell,
+                diagonal=diagonal,
+                active_fire=active_fire,
+            )
+            if step_cost > budget_remaining:
+                break
+            budget_remaining -= step_cost
+            current = next_cell
+        return current
+
+    def _ground_target_reachable(self, origin: Coordinate, target: Coordinate) -> bool:
+        """Return whether a ground crew can safely reach the target now."""
+        return self._find_ground_path(
+            origin=origin,
+            target=target,
+            active_fire=set(self._session_state.fire_cells),
+        ) is not None
+
+    def _find_ground_path(
+        self,
+        *,
+        origin: Coordinate,
+        target: Coordinate,
+        active_fire: set[Coordinate],
+    ) -> list[Coordinate] | None:
+        """Find the safest terrain-aware path for a ground crew."""
+        if origin == target:
+            return [origin]
+        if not self._is_ground_cell_passable(target, active_fire):
+            return None
+
+        frontier: list[tuple[float, int, Coordinate]] = []
+        heappush(frontier, (0.0, 0, origin))
+        came_from: dict[Coordinate, Coordinate | None] = {origin: None}
+        cost_so_far: dict[Coordinate, float] = {origin: 0.0}
+        serial = 1
+
+        while frontier:
+            _, _, current = heappop(frontier)
+            if current == target:
+                return self._reconstruct_path(came_from, target)
+
+            for delta_row, delta_col, diagonal in _NEIGHBOURS:
+                next_row = current[0] + delta_row
+                next_col = current[1] + delta_col
+                next_cell = (next_row, next_col)
+                if not self._is_ground_cell_passable(next_cell, active_fire):
+                    continue
+                step_cost = self._ground_step_cost(
+                    current=current,
+                    next_cell=next_cell,
+                    diagonal=diagonal,
+                    active_fire=active_fire,
+                )
+                new_cost = cost_so_far[current] + step_cost
+                if new_cost >= cost_so_far.get(next_cell, float("inf")):
+                    continue
+                cost_so_far[next_cell] = new_cost
+                priority = new_cost + self._ground_path_heuristic(next_cell, target)
+                came_from[next_cell] = current
+                heappush(frontier, (priority, serial, next_cell))
+                serial += 1
+        return None
+
+    def _reconstruct_path(
+        self,
+        came_from: dict[Coordinate, Coordinate | None],
+        target: Coordinate,
+    ) -> list[Coordinate]:
+        """Reconstruct a path from an A* parent map."""
+        path = [target]
+        current = target
+        while came_from[current] is not None:
+            current = came_from[current]  # type: ignore[assignment]
+            path.append(current)
+        path.reverse()
+        return path
+
+    def _ground_path_heuristic(self, current: Coordinate, target: Coordinate) -> float:
+        """Cheap lower bound for A* path search."""
+        return max(abs(target[0] - current[0]), abs(target[1] - current[1]))
+
+    def _is_ground_cell_passable(
+        self,
+        coord: Coordinate,
+        active_fire: set[Coordinate],
+    ) -> bool:
+        """Return whether a ground crew may occupy one cell."""
+        row, col = coord
+        if not (0 <= row < self._grid_size and 0 <= col < self._grid_size):
+            return False
+        if coord in active_fire:
+            return False
+        return self._get_terrain(coord).water is WaterType.NONE
+
+    def _ground_step_cost(
+        self,
+        *,
+        current: Coordinate,
+        next_cell: Coordinate,
+        diagonal: bool,
+        active_fire: set[Coordinate],
+    ) -> float:
+        """Cost model for ground-crew pathfinding and per-tick travel."""
+        current_terrain = self._get_terrain(current)
+        next_terrain = self._get_terrain(next_cell)
+        slope_cost = min(
+            _GROUND_CREW_MAX_SLOPE_COST,
+            abs(next_terrain.elevation - current_terrain.elevation) * 2.5,
+        )
+        fire_penalty = self._ground_fire_penalty(next_cell, active_fire)
+        water_penalty = self._ground_water_penalty.get(next_cell, 0.0)
+        step_cost = (
+            1.0
+            + (_GROUND_CREW_DIAGONAL_COST if diagonal else 0.0)
+            + slope_cost
+            + fire_penalty
+            + water_penalty
+        )
+        return min(_GROUND_CREW_MAX_STEP_COST, step_cost)
+
+    def _ground_fire_penalty(
+        self,
+        coord: Coordinate,
+        active_fire: set[Coordinate],
+    ) -> float:
+        """Penalty for stepping near active fire without stepping into it."""
+        for delta_row in range(-1, 2):
+            for delta_col in range(-1, 2):
+                if delta_row == 0 and delta_col == 0:
+                    continue
+                if (coord[0] + delta_row, coord[1] + delta_col) in active_fire:
+                    return _GROUND_CREW_FIRE_EDGE_PENALTY
+        for delta_row in range(-2, 3):
+            for delta_col in range(-2, 3):
+                if max(abs(delta_row), abs(delta_col)) != 2:
+                    continue
+                if (coord[0] + delta_row, coord[1] + delta_col) in active_fire:
+                    return _GROUND_CREW_FIRE_NEARBY_PENALTY
+        return 0.0
 
     def _sign(self, value: int) -> int:
         """Return the sign of an integer value."""
@@ -780,12 +1116,20 @@ class SimulationEngine:
     def _create_firebreak(self, center: Coordinate) -> list[Coordinate]:
         """Create a small firebreak line centered on a coordinate."""
         created: list[Coordinate] = []
-        for offset in range(-1, 2):
-            cell = self._clamp_coordinate((center[0] + offset, center[1]))
+        for cell in self._preview_firebreak(center=center):
             if cell not in self._session_state.firebreak_cells:
                 self._session_state.firebreak_cells.append(cell)
                 created.append(cell)
         self._session_state.firebreak_cells.sort()
+        return created
+
+    def _preview_firebreak(self, center: Coordinate) -> list[Coordinate]:
+        """Preview the cells that would be affected by a firebreak command."""
+        created: list[Coordinate] = []
+        for offset in range(-1, 2):
+            cell = self._clamp_coordinate((center[0] + offset, center[1]))
+            if cell not in created:
+                created.append(cell)
         return created
 
     def _update_score(self) -> None:

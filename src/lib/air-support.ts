@@ -41,7 +41,7 @@ export const PAYLOAD_SETTINGS: Record<AirSupportPayload, {
 const MISSION_PROGRESS_PER_SECOND: Record<AirSupportPhase, number> = {
   approach: 0.5,
   drop: 0.5,
-  exit: 0.42,
+  exit: 0.32,
   complete: 0,
 };
 
@@ -52,8 +52,30 @@ const RUN_DIRECTION_CANDIDATES: GridCoordinate[] = [
   { row: 1, col: -1 },
 ];
 
+const NEIGHBOUR_OFFSETS: GridCoordinate[] = [
+  { row: 1, col: 0 },
+  { row: -1, col: 0 },
+  { row: 0, col: 1 },
+  { row: 0, col: -1 },
+  { row: 1, col: 1 },
+  { row: 1, col: -1 },
+  { row: -1, col: 1 },
+  { row: -1, col: -1 },
+];
+
 function offMapDistance(gridSize: number, multiplier: number = 1): number {
   return gridSize * multiplier + 8;
+}
+
+function manhattanDistance(a: GridCoordinate, b: GridCoordinate): number {
+  return Math.abs(a.row - b.row) + Math.abs(a.col - b.col);
+}
+
+function midpoint(a: GridCoordinate, b: GridCoordinate): GridCoordinate {
+  return {
+    row: Math.round((a.row + b.row) / 2),
+    col: Math.round((a.col + b.col) / 2),
+  };
 }
 
 export const AIRCRAFT_SPRITES: Record<AircraftModel, Array<[number, number]>> = {
@@ -261,6 +283,121 @@ function stepDirection(start: GridCoordinate, end: GridCoordinate): GridCoordina
   };
 }
 
+function getFireEdgeAndContainmentCells(
+  fireCells: GridCoordinate[],
+  gridSize: number,
+): { edgeCells: GridCoordinate[]; containmentCells: GridCoordinate[] } {
+  const fireSet = new Set(fireCells.map((cell) => `${cell.row},${cell.col}`));
+  const edgeCells: GridCoordinate[] = [];
+  const containment = new Map<string, GridCoordinate>();
+
+  for (const cell of fireCells) {
+    let isEdge = false;
+    for (const offset of NEIGHBOUR_OFFSETS) {
+      const nextRow = cell.row + offset.row;
+      const nextCol = cell.col + offset.col;
+      if (nextRow < 0 || nextCol < 0 || nextRow >= gridSize || nextCol >= gridSize) {
+        continue;
+      }
+      const key = `${nextRow},${nextCol}`;
+      if (fireSet.has(key)) continue;
+      isEdge = true;
+      containment.set(key, { row: nextRow, col: nextCol });
+    }
+    if (isEdge) edgeCells.push(cell);
+  }
+
+  return {
+    edgeCells,
+    containmentCells: [...containment.values()],
+  };
+}
+
+function chooseContainmentFocus(
+  state: SessionState,
+  fireCells: GridCoordinate[],
+): { focus: GridCoordinate; runCells: GridCoordinate[] } {
+  const village = state.villages[0]
+    ? { row: state.villages[0].row, col: state.villages[0].col }
+    : { row: Math.floor(state.grid_size / 2), col: Math.floor(state.grid_size / 2) };
+  const { edgeCells, containmentCells } = getFireEdgeAndContainmentCells(fireCells, state.grid_size);
+  const runCells = edgeCells.length > 0 ? edgeCells : fireCells;
+  const anchor = runCells.reduce((best, cell) =>
+    manhattanDistance(cell, village) < manhattanDistance(best, village) ? cell : best,
+  );
+
+  if (containmentCells.length === 0) {
+    return { focus: anchor, runCells };
+  }
+
+  const nearestEdge = runCells.reduce((best, cell) =>
+    manhattanDistance(cell, anchor) < manhattanDistance(best, anchor) ? cell : best,
+  );
+  const nearbyContainment = containmentCells.filter((cell) =>
+    Math.max(Math.abs(cell.row - nearestEdge.row), Math.abs(cell.col - nearestEdge.col)) <= 2,
+  );
+  let focus = (nearbyContainment.length > 0 ? nearbyContainment : containmentCells).reduce((best, cell) => {
+    const bestScore = manhattanDistance(best, anchor) + manhattanDistance(best, village);
+    const cellScore = manhattanDistance(cell, anchor) + manhattanDistance(cell, village);
+    return cellScore < bestScore ? cell : best;
+  });
+
+  const fireSet = new Set(fireCells.map((cell) => `${cell.row},${cell.col}`));
+  const outward = stepDirection(nearestEdge, focus);
+  const nudged = clampCoordinate(
+    { row: focus.row + outward.row, col: focus.col + outward.col },
+    state.grid_size,
+  );
+  if (!fireSet.has(`${nudged.row},${nudged.col}`)) {
+    focus = nudged;
+  }
+
+  return { focus, runCells };
+}
+
+function shiftRunTowardFocus(
+  dropStart: GridCoordinate,
+  dropEnd: GridCoordinate,
+  focus: GridCoordinate,
+  fireCells: GridCoordinate[],
+  gridSize: number,
+): { dropStart: GridCoordinate; dropEnd: GridCoordinate } {
+  const fireSet = new Set(fireCells.map((cell) => `${cell.row},${cell.col}`));
+  const shift = stepDirection(midpoint(dropStart, dropEnd), focus);
+  if (shift.row === 0 && shift.col === 0) {
+    return { dropStart, dropEnd };
+  }
+
+  const scoreRun = (start: GridCoordinate, end: GridCoordinate) => {
+    const overlap = buildDropCorridor(start, end, gridSize, 1)
+      .filter((cell) => fireSet.has(`${cell.row},${cell.col}`)).length;
+    return overlap * 1000 + manhattanDistance(midpoint(start, end), focus);
+  };
+
+  let bestStart = dropStart;
+  let bestEnd = dropEnd;
+  let bestScore = scoreRun(dropStart, dropEnd);
+
+  for (let steps = 1; steps <= 3; steps++) {
+    const nextStart = clampCoordinate(
+      { row: dropStart.row + shift.row * steps, col: dropStart.col + shift.col * steps },
+      gridSize,
+    );
+    const nextEnd = clampCoordinate(
+      { row: dropEnd.row + shift.row * steps, col: dropEnd.col + shift.col * steps },
+      gridSize,
+    );
+    const score = scoreRun(nextStart, nextEnd);
+    if (score < bestScore) {
+      bestStart = nextStart;
+      bestEnd = nextEnd;
+      bestScore = score;
+    }
+  }
+
+  return { dropStart: bestStart, dropEnd: bestEnd };
+}
+
 export function buildFallbackAirSupportMission(
   state: SessionState,
   seed: number,
@@ -269,21 +406,19 @@ export function buildFallbackAirSupportMission(
   const fireCells = state.cells.filter((cell): cell is Cell => cell.state === 'fire');
   if (fireCells.length === 0) return null;
 
-  const center = {
-    row: Math.round(fireCells.reduce((sum, cell) => sum + cell.row, 0) / fireCells.length),
-    col: Math.round(fireCells.reduce((sum, cell) => sum + cell.col, 0) / fireCells.length),
-  };
+  const { focus, runCells } = chooseContainmentFocus(state, fireCells);
   const wind = getWindVector(state.wind.direction);
-  const runAxis = chooseRunDirection(fireCells, wind);
+  const runAxis = chooseRunDirection(runCells, wind);
   const radius = 3;
-  const dropStart = clampCoordinate(
-    { row: center.row - runAxis.row * radius, col: center.col - runAxis.col * radius },
+  let dropStart = clampCoordinate(
+    { row: focus.row - runAxis.row * radius, col: focus.col - runAxis.col * radius },
     state.grid_size,
   );
-  const dropEnd = clampCoordinate(
-    { row: center.row + runAxis.row * radius, col: center.col + runAxis.col * radius },
+  let dropEnd = clampCoordinate(
+    { row: focus.row + runAxis.row * radius, col: focus.col + runAxis.col * radius },
     state.grid_size,
   );
+  ({ dropStart, dropEnd } = shiftRunTowardFocus(dropStart, dropEnd, focus, fireCells, state.grid_size));
   const entryDirection = { row: -(wind.row || runAxis.row || 1), col: -(wind.col || runAxis.col || 0) };
   const entry = extendPoint(
     dropStart,

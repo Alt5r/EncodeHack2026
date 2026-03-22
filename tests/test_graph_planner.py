@@ -220,3 +220,89 @@ async def test_langgraph_planner_parses_kiro_wrapped_json(monkeypatch) -> None:
     assert commands[0].unit_id == "heli-alpha"
     assert commands[0].action.value == "drop_water"
     assert commands[0].target == (4, 12)
+
+
+async def test_langgraph_planner_filters_ground_commands_into_active_fire(monkeypatch) -> None:
+    """Unsafe ground-crew targets on burning cells should be rejected before execution."""
+    state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    state.fire_cells = [(14, 14)]
+    planner = LangGraphPlanner(
+        orchestrator_model="unused",
+        subagent_model="unused",
+        timeout_seconds=5.0,
+        max_tokens=100,
+        graph_invoke_timeout_seconds=60.0,
+        fallback_planner=HeuristicPlanner(),
+        anthropic_client=None,
+        radio_sink=None,
+        use_kiro=True,
+    )
+
+    async def fake_call(agent_name: str, _: str) -> str:
+        if agent_name == "watchtower-orchestrator":
+            return (
+                '{"missions":[{"agent_id":"ground-1","intent":"firebreak","target_x":14,"target_y":14,'
+                '"priority":10,"reason":"stop the head fire"}],"air_support_requests":[]}'
+            )
+        return (
+            '{"unit_id":"ground-1","action":"create_firebreak","target_x":14,"target_y":14,'
+            '"rationale":"Dig through the active fire.","radio_message":"Pushing into the flames."}'
+        )
+
+    monkeypatch.setattr(planner, "_call_kiro", fake_call)
+
+    commands = await planner.plan(session_state=state)
+
+    assert all(
+        not (command.unit_id == "ground-1" and command.target in state.fire_cells)
+        for command in commands
+    )
+
+
+async def test_langgraph_planner_ignores_inactive_units(monkeypatch) -> None:
+    """Inactive crews should drop out of mission assignment and command validation."""
+    state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    for unit in state.units:
+        if unit.id == "ground-1":
+            unit.is_active = False
+            unit.status_text = "lost"
+            unit.target = None
+
+    planner = LangGraphPlanner(
+        orchestrator_model="unused",
+        subagent_model="unused",
+        timeout_seconds=5.0,
+        max_tokens=100,
+        graph_invoke_timeout_seconds=60.0,
+        fallback_planner=HeuristicPlanner(),
+        anthropic_client=None,
+        radio_sink=None,
+        use_kiro=True,
+    )
+
+    async def fake_call(agent_name: str, _: str) -> str:
+        if agent_name == "watchtower-orchestrator":
+            return (
+                '{"missions":[{"agent_id":"ground-1","intent":"firebreak","target_x":12,"target_y":12,'
+                '"priority":10,"reason":"assign the lost crew"}],"air_support_requests":[]}'
+            )
+        return (
+            '{"unit_id":"ground-1","action":"create_firebreak","target_x":12,"target_y":12,'
+            '"rationale":"Continuing operations.","radio_message":"Still working the line."}'
+        )
+
+    monkeypatch.setattr(planner, "_call_kiro", fake_call)
+
+    commands = await planner.plan(session_state=state)
+
+    assert all(command.unit_id != "ground-1" for command in commands)

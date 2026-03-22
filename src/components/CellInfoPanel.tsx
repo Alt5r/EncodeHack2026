@@ -190,6 +190,12 @@ export default function CellInfoPanel({ row, col, terrain, cell, unit }: CellInf
               <Row label={UNIT_LABELS[unit.type] ?? unit.type}>
                 <span style={{ fontWeight: 'bold' }}>{unit.label}</span>
               </Row>
+              <Row label="Condition">
+                <span>{unit.is_active ? 'Active' : 'Lost'}</span>
+              </Row>
+              <Row label="Status">
+                <span>{unit.status_text}</span>
+              </Row>
             </>
           )}
         </>

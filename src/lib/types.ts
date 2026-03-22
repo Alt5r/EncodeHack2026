@@ -79,6 +79,7 @@ export interface Unit {
   label: string;            // display label: "Alpha", "Bravo", "Ground 1"
   row: number;
   col: number;
+  is_active: boolean;
   target?: { row: number; col: number } | null;
   water_capacity?: number;  // helicopters only (max 6)
   water_remaining?: number; // helicopters only
@@ -122,6 +123,7 @@ export interface RawUnitState {
   water_capacity: number;
   water_remaining: number;
   firebreak_strength: number;
+  is_active?: boolean;
   status_text: string;
 }
 

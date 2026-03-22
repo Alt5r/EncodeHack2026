@@ -13,6 +13,10 @@ from watchtower_backend.domain.models.simulation import (
     WindState,
 )
 from watchtower_backend.services.sessions.runtime import build_initial_state
+from watchtower_backend.services.simulation.air_support import (
+    build_drop_corridor,
+    get_mission_progress_per_tick,
+)
 from watchtower_backend.services.simulation.engine import SimulationEngine
 
 
@@ -94,6 +98,216 @@ def test_firebreak_blocks_immediate_spread() -> None:
     )
 
     assert (10, 10) in engine.session_state.firebreak_cells
+
+
+def test_ground_crews_keep_advancing_between_commands() -> None:
+    """Ground crews should keep moving toward their assigned target every tick."""
+    engine = _make_engine(seed=11)
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.MOVE,
+                target=(8, 8),
+                rationale="Redeploy to the west flank.",
+                state_version=1,
+            )
+        ]
+    )
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert ground.position == (14, 14)
+    assert ground.target == (8, 8)
+    assert ground.status_text == "moving"
+
+    engine.step(commands=[])
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert ground.position == (12, 12)
+    assert ground.target == (8, 8)
+    assert ground.status_text == "moving"
+
+
+def test_ground_crew_speed_does_not_change_fire_spread_timing() -> None:
+    """Speeding crews up must not alter the fire progression tick."""
+    baseline = _make_engine(fire_cells=[(12, 12)], seed=31)
+    moving = _make_engine(fire_cells=[(12, 12)], seed=31)
+
+    baseline.step(commands=[])
+    moving.step(
+        commands=[
+            UnitCommand(
+                session_id=moving.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.MOVE,
+                target=(8, 8),
+                rationale="Move without affecting fire behavior.",
+                state_version=1,
+            )
+        ]
+    )
+
+    assert sorted(moving.session_state.fire_cells) == sorted(baseline.session_state.fire_cells)
+    assert moving.session_state.tick == baseline.session_state.tick == 1
+
+
+def test_ground_crews_cannot_move_into_active_fire() -> None:
+    """Ground crews must never be ordered directly into burning cells."""
+    engine = _make_engine(fire_cells=[(12, 12)], seed=32)
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    start = ground.position
+
+    mutations = engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.MOVE,
+                target=(12, 12),
+                rationale="Unsafe move into the fire core.",
+                state_version=1,
+            )
+        ]
+    )
+
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert any(mutation["kind"] == "command_rejected" for mutation in mutations)
+    assert ground.position == start
+
+
+def test_ground_crews_cannot_cut_firebreaks_through_active_fire() -> None:
+    """Firebreak targets that overlap live fire should be rejected."""
+    engine = _make_engine(fire_cells=[(10, 10)], seed=33)
+
+    mutations = engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.CREATE_FIREBREAK,
+                target=(10, 10),
+                rationale="Unsafe break through the fire.",
+                state_version=1,
+            )
+        ]
+    )
+
+    assert any(mutation["kind"] == "command_rejected" for mutation in mutations)
+    assert (10, 10) not in engine.session_state.firebreak_cells
+
+
+def test_ground_crews_route_around_fire_instead_of_cutting_through_it() -> None:
+    """Ground crews should route around burning cells rather than driving through them."""
+    engine = _make_engine(fire_cells=[(14, 15)], seed=34)
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.MOVE,
+                target=(14, 12),
+                rationale="Wrap around the flame edge.",
+                state_version=1,
+            )
+        ]
+    )
+
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert ground.position != (14, 14)
+    assert ground.position != (14, 15)
+    assert ground.position not in engine.session_state.fire_cells
+    assert ground.is_active
+
+
+def test_ground_crews_die_when_fire_reaches_their_cell() -> None:
+    """Ground crews should be marked lost if live fire overruns their position."""
+    engine = _make_engine(fire_cells=[(14, 16)], seed=35)
+
+    mutations = engine.step(commands=[])
+
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert any(mutation["kind"] == "unit_killed" for mutation in mutations)
+    assert not ground.is_active
+    assert ground.status_text == "lost"
+    assert ground.target is None
+
+
+def test_ground_crews_cannot_cross_water_even_if_target_is_safe() -> None:
+    """Water should make a ground target unreachable rather than traversable."""
+    grid = _make_terrain_grid(size=24)
+    for row in range(24):
+        grid[row][15] = TerrainCell(
+            elevation=0.2,
+            vegetation=VegetationType.MEADOW,
+            water=WaterType.WATER,
+        )
+    engine = _make_engine(terrain_grid=grid, seed=36)
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    start = ground.position
+
+    mutations = engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.MOVE,
+                target=(14, 12),
+                rationale="Attempt a route across the river.",
+                state_version=1,
+            )
+        ]
+    )
+
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert any(mutation["kind"] == "command_rejected" for mutation in mutations)
+    assert ground.position == start
+    assert ground.target is None
+
+
+def test_ground_crews_slow_down_near_water_even_without_crossing_it() -> None:
+    """Water-adjacent movement should be slower than open-ground travel."""
+    baseline = _make_engine(seed=37)
+    baseline.step(
+        commands=[
+            UnitCommand(
+                session_id=baseline.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.MOVE,
+                target=(14, 12),
+                rationale="Open-ground traverse.",
+                state_version=1,
+            )
+        ]
+    )
+    baseline_ground = next(unit for unit in baseline.session_state.units if unit.id == "ground-1")
+
+    river_edge_grid = _make_terrain_grid(size=24)
+    river_edge_grid[13][15] = TerrainCell(
+        elevation=0.2,
+        vegetation=VegetationType.MEADOW,
+        water=WaterType.WATER,
+    )
+    slowed = _make_engine(terrain_grid=river_edge_grid, seed=37)
+    slowed.step(
+        commands=[
+            UnitCommand(
+                session_id=slowed.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.MOVE,
+                target=(14, 12),
+                rationale="Skirt the river edge.",
+                state_version=1,
+            )
+        ]
+    )
+    slowed_ground = next(unit for unit in slowed.session_state.units if unit.id == "ground-1")
+
+    baseline_remaining = abs(baseline_ground.position[0] - 14) + abs(baseline_ground.position[1] - 12)
+    slowed_remaining = abs(slowed_ground.position[0] - 14) + abs(slowed_ground.position[1] - 12)
+
+    assert baseline_ground.position == (14, 14)
+    assert slowed_remaining > baseline_remaining
 
 
 # --- Water barrier tests ---
@@ -446,9 +660,11 @@ def test_firebreak_blocks_terrain_aware_spread() -> None:
         )
 
 
-def test_call_air_support_creates_mission_with_requested_geometry() -> None:
-    """Tower air-support commands should preserve planner-provided route geometry."""
-    engine = _make_engine(fire_cells=[(10, 10), (11, 11)], seed=11)
+def test_call_air_support_biases_requested_geometry_to_fire_edge() -> None:
+    """Planner-provided drop runs should be nudged off the fire core toward containment."""
+    engine = _make_engine(fire_cells=[(10, 10), (11, 11), (12, 12)], seed=11)
+    original_start = (8, 8)
+    original_end = (14, 14)
 
     engine.step(
         commands=[
@@ -461,8 +677,8 @@ def test_call_air_support_creates_mission_with_requested_geometry() -> None:
                 state_version=1,
                 air_support_payload=AirSupportPayload.RETARDANT,
                 approach_points=[(-8, 10), (1, 10)],
-                drop_start=(8, 8),
-                drop_end=(14, 14),
+                drop_start=original_start,
+                drop_end=original_end,
             )
         ]
     )
@@ -472,13 +688,30 @@ def test_call_air_support_creates_mission_with_requested_geometry() -> None:
     assert mission.payload_type is AirSupportPayload.RETARDANT
     assert mission.phase is AirSupportPhase.APPROACH
     assert mission.progress == 0.0
-    assert mission.drop_start == (8, 8)
-    assert mission.drop_end == (14, 14)
-    assert mission.approach_points == [(-8, 10), (1, 10), (8, 8)]
+    original_overlap = sum(
+        1
+        for cell in build_drop_corridor(original_start, original_end, engine.session_state.grid_size, 1)
+        if cell in set(engine.session_state.fire_cells)
+    )
+    actual_overlap = sum(
+        1
+        for cell in build_drop_corridor(mission.drop_start, mission.drop_end, engine.session_state.grid_size, 1)
+        if cell in set(engine.session_state.fire_cells)
+    )
+    assert actual_overlap < original_overlap
+    assert mission.approach_points[-1] == mission.drop_start
+
+
+def test_air_support_exit_phase_is_slower_than_the_drop_run() -> None:
+    """Post-drop exit should stay visibly slower than the bombing run itself."""
+    assert get_mission_progress_per_tick(AirSupportPhase.EXIT) == 0.32
+    assert get_mission_progress_per_tick(AirSupportPhase.EXIT) < get_mission_progress_per_tick(
+        AirSupportPhase.DROP
+    )
 
 
 def test_air_support_drop_creates_treated_cells() -> None:
-    """An air-support mission should create lingering treated terrain on the drop run."""
+    """An air-support mission should create lingering treated terrain on the containment run."""
     engine = _make_engine(fire_cells=[(10, 10), (11, 11), (12, 12)], seed=12)
 
     engine.step(
@@ -501,7 +734,12 @@ def test_air_support_drop_creates_treated_cells() -> None:
 
     assert any(mutation["kind"] == "air_support_drop" for mutation in mutations)
     assert engine.session_state.treated_cells
-    assert any(cell.coordinate == (11, 11) for cell in engine.session_state.treated_cells)
+    treated_coordinates = {cell.coordinate for cell in engine.session_state.treated_cells}
+    fire_coordinates = set(engine.session_state.fire_cells)
+    outside_fire = treated_coordinates - fire_coordinates
+    inside_fire = treated_coordinates & fire_coordinates
+    assert outside_fire
+    assert len(outside_fire) > len(inside_fire)
     assert engine.session_state.air_support_missions
     assert engine.session_state.air_support_missions[0].phase is AirSupportPhase.DROP
 

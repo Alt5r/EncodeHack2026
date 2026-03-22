@@ -5,7 +5,15 @@ import {
   PAYLOAD_SETTINGS,
 } from './air-support';
 import type { SessionTerrainCellData } from './cell-info';
-import type { AirSupportMission, Cell, ScoreSummary, SessionState, TreatedCell } from './types';
+import type {
+  AirSupportMission,
+  Cell,
+  GridCoordinate,
+  ScoreSummary,
+  SessionState,
+  TreatedCell,
+  Unit,
+} from './types';
 
 const NEIGHBOURS: Array<{ dr: number; dc: number; diagonal: boolean }> = [
   { dr: 1, dc: 0, diagonal: false },
@@ -43,6 +51,20 @@ const VEGETATION_SPREAD: Record<SessionTerrainCellData['vegetation'], number> = 
   forest: 1.3,
 };
 
+const UNIT_MOVE_STEPS_PER_TICK = {
+  helicopter: 1,
+  ground_crew: 2,
+} as const;
+
+const GROUND_CREW_MOVE_BUDGET_PER_TICK = 2.6;
+const GROUND_CREW_DIAGONAL_COST = 0.15;
+const GROUND_CREW_MAX_SLOPE_COST = 0.75;
+const GROUND_CREW_FIRE_EDGE_PENALTY = 0.9;
+const GROUND_CREW_FIRE_NEARBY_PENALTY = 0.3;
+const GROUND_CREW_WATER_EDGE_PENALTY = 0.55;
+const GROUND_CREW_WATER_NEARBY_PENALTY = 0.2;
+const GROUND_CREW_MAX_STEP_COST = 2.35;
+
 function randomFromSeed(seed: number): number {
   let value = seed | 0;
   value = (value + 0x6d2b79f5) | 0;
@@ -53,6 +75,250 @@ function randomFromSeed(seed: number): number {
 
 function coordinateKey(row: number, col: number): string {
   return `${row},${col}`;
+}
+
+function sign(value: number): number {
+  if (value === 0) return 0;
+  return value > 0 ? 1 : -1;
+}
+
+function moveTowards(
+  row: number,
+  col: number,
+  targetRow: number,
+  targetCol: number,
+  maxSteps: number,
+) {
+  let nextRow = row;
+  let nextCol = col;
+  for (let step = 0; step < maxSteps; step++) {
+    if (nextRow === targetRow && nextCol === targetCol) break;
+    nextRow += sign(targetRow - nextRow);
+    nextCol += sign(targetCol - nextCol);
+  }
+  return { row: nextRow, col: nextCol };
+}
+
+function getActiveFireKeys(state: SessionState): Set<string> {
+  return new Set(
+    state.cells
+      .filter((cell) => cell.state === 'fire')
+      .map((cell) => coordinateKey(cell.row, cell.col)),
+  );
+}
+
+function isGroundCellPassable(
+  row: number,
+  col: number,
+  terrainGrid: SessionTerrainCellData[][],
+  fireKeys: Set<string>,
+): boolean {
+  if (row < 0 || col < 0 || row >= terrainGrid.length || col >= terrainGrid.length) {
+    return false;
+  }
+  if (terrainGrid[row][col].water !== 'none') {
+    return false;
+  }
+  return !fireKeys.has(coordinateKey(row, col));
+}
+
+function getGroundWaterPenalty(
+  row: number,
+  col: number,
+  terrainGrid: SessionTerrainCellData[][],
+): number {
+  for (let radius = 1; radius <= 2; radius++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue;
+        const nextRow = row + dr;
+        const nextCol = col + dc;
+        if (nextRow < 0 || nextCol < 0 || nextRow >= terrainGrid.length || nextCol >= terrainGrid.length) {
+          continue;
+        }
+        if (terrainGrid[nextRow][nextCol].water === 'none') continue;
+        return radius === 1 ? GROUND_CREW_WATER_EDGE_PENALTY : GROUND_CREW_WATER_NEARBY_PENALTY;
+      }
+    }
+  }
+  return 0;
+}
+
+function getGroundFirePenalty(
+  row: number,
+  col: number,
+  fireKeys: Set<string>,
+): number {
+  for (let radius = 1; radius <= 2; radius++) {
+    for (let dr = -radius; dr <= radius; dr++) {
+      for (let dc = -radius; dc <= radius; dc++) {
+        if (Math.max(Math.abs(dr), Math.abs(dc)) !== radius) continue;
+        if (fireKeys.has(coordinateKey(row + dr, col + dc))) {
+          return radius === 1 ? GROUND_CREW_FIRE_EDGE_PENALTY : GROUND_CREW_FIRE_NEARBY_PENALTY;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+function getGroundStepCost(
+  current: GridCoordinate,
+  next: GridCoordinate,
+  terrainGrid: SessionTerrainCellData[][],
+  fireKeys: Set<string>,
+): number {
+  const diagonal = current.row !== next.row && current.col !== next.col;
+  const elevationDelta = Math.abs(
+    terrainGrid[next.row][next.col].elevation - terrainGrid[current.row][current.col].elevation,
+  );
+  const slopeCost = Math.min(GROUND_CREW_MAX_SLOPE_COST, elevationDelta * 2.5);
+  const stepCost =
+    1 +
+    (diagonal ? GROUND_CREW_DIAGONAL_COST : 0) +
+    slopeCost +
+    getGroundFirePenalty(next.row, next.col, fireKeys) +
+    getGroundWaterPenalty(next.row, next.col, terrainGrid);
+  return Math.min(GROUND_CREW_MAX_STEP_COST, stepCost);
+}
+
+function reconstructGroundPath(
+  parents: Map<string, GridCoordinate | null>,
+  target: GridCoordinate,
+): GridCoordinate[] {
+  const path: GridCoordinate[] = [target];
+  let current: GridCoordinate | null = target;
+  while (current) {
+    const parent: GridCoordinate | null = parents.get(coordinateKey(current.row, current.col)) ?? null;
+    if (!parent) break;
+    path.push(parent);
+    current = parent;
+  }
+  path.reverse();
+  return path;
+}
+
+function findGroundPath(
+  origin: GridCoordinate,
+  target: GridCoordinate,
+  state: SessionState,
+  terrainGrid: SessionTerrainCellData[][],
+): GridCoordinate[] | null {
+  const fireKeys = getActiveFireKeys(state);
+  if (!isGroundCellPassable(target.row, target.col, terrainGrid, fireKeys)) {
+    return null;
+  }
+  if (origin.row === target.row && origin.col === target.col) {
+    return [origin];
+  }
+
+  const frontier: Array<GridCoordinate & { priority: number; serial: number }> = [
+    { ...origin, priority: 0, serial: 0 },
+  ];
+  const parents = new Map<string, GridCoordinate | null>([
+    [coordinateKey(origin.row, origin.col), null],
+  ]);
+  const costSoFar = new Map<string, number>([
+    [coordinateKey(origin.row, origin.col), 0],
+  ]);
+  let serial = 1;
+
+  while (frontier.length > 0) {
+    frontier.sort((a, b) => (
+      a.priority === b.priority ? a.serial - b.serial : a.priority - b.priority
+    ));
+    const current = frontier.shift()!;
+    if (current.row === target.row && current.col === target.col) {
+      return reconstructGroundPath(parents, target);
+    }
+
+    const currentKey = coordinateKey(current.row, current.col);
+    const currentCost = costSoFar.get(currentKey) ?? 0;
+
+    for (const neighbour of NEIGHBOURS) {
+      const nextRow = current.row + neighbour.dr;
+      const nextCol = current.col + neighbour.dc;
+      if (!isGroundCellPassable(nextRow, nextCol, terrainGrid, fireKeys)) {
+        continue;
+      }
+      const next: GridCoordinate = { row: nextRow, col: nextCol };
+      const nextKey = coordinateKey(nextRow, nextCol);
+      const nextCost = currentCost + getGroundStepCost(
+        { row: current.row, col: current.col },
+        next,
+        terrainGrid,
+        fireKeys,
+      );
+      const known = costSoFar.get(nextKey);
+      if (known != null && known <= nextCost) {
+        continue;
+      }
+      costSoFar.set(nextKey, nextCost);
+      parents.set(nextKey, { row: current.row, col: current.col });
+      frontier.push({
+        ...next,
+        priority: nextCost + Math.max(Math.abs(target.row - nextRow), Math.abs(target.col - nextCol)),
+        serial,
+      });
+      serial += 1;
+    }
+  }
+
+  return null;
+}
+
+function moveGroundUnit(
+  unit: Unit,
+  state: SessionState,
+  terrainGrid: SessionTerrainCellData[][],
+): GridCoordinate {
+  if (!unit.target) {
+    return { row: unit.row, col: unit.col };
+  }
+  const path = findGroundPath(
+    { row: unit.row, col: unit.col },
+    unit.target,
+    state,
+    terrainGrid,
+  );
+  if (!path || path.length <= 1) {
+    return { row: unit.row, col: unit.col };
+  }
+
+  const fireKeys = getActiveFireKeys(state);
+  let budgetRemaining = GROUND_CREW_MOVE_BUDGET_PER_TICK;
+  let current = { row: unit.row, col: unit.col };
+  for (const next of path.slice(1)) {
+    const stepCost = getGroundStepCost(current, next, terrainGrid, fireKeys);
+    if (stepCost > budgetRemaining) {
+      break;
+    }
+    budgetRemaining -= stepCost;
+    current = next;
+  }
+  return current;
+}
+
+function resolveGroundCrewCasualties(state: SessionState): SessionState {
+  const fireKeys = getActiveFireKeys(state);
+  return {
+    ...state,
+    units: state.units.map((unit) => {
+      if (
+        unit.type !== 'ground_crew' ||
+        !unit.is_active ||
+        !fireKeys.has(coordinateKey(unit.row, unit.col))
+      ) {
+        return unit;
+      }
+      return {
+        ...unit,
+        is_active: false,
+        target: null,
+        status_text: 'lost',
+      };
+    }),
+  };
 }
 
 function buildVillageSet(state: SessionState): Set<string> {
@@ -319,6 +585,64 @@ function advanceAirSupportMissions(
   };
 }
 
+function advanceUnits(
+  state: SessionState,
+  terrainGrid: SessionTerrainCellData[][],
+): SessionState {
+  return {
+    ...state,
+    units: state.units.map((unit) => {
+      if (!unit.is_active) {
+        return { ...unit, target: null };
+      }
+      if (!unit.target || unit.status_text === 'holding') {
+        return unit.status_text === 'holding' && unit.target
+          ? { ...unit, target: null }
+          : unit;
+      }
+      if (unit.row === unit.target.row && unit.col === unit.target.col) {
+        return unit.status_text === 'moving'
+          ? { ...unit, target: null, status_text: 'ready' }
+          : unit;
+      }
+
+      if (unit.type === 'ground_crew') {
+        const safePath = findGroundPath(
+          { row: unit.row, col: unit.col },
+          unit.target,
+          state,
+          terrainGrid,
+        );
+        if (!safePath) {
+          return {
+            ...unit,
+            target: null,
+            status_text: 'holding',
+          };
+        }
+      }
+
+      const moved = unit.type === 'ground_crew'
+        ? moveGroundUnit(unit, state, terrainGrid)
+        : moveTowards(
+          unit.row,
+          unit.col,
+          unit.target.row,
+          unit.target.col,
+          UNIT_MOVE_STEPS_PER_TICK[unit.type],
+        );
+      const reached = moved.row === unit.target.row && moved.col === unit.target.col;
+      return {
+        ...unit,
+        row: moved.row,
+        col: moved.col,
+        target: reached && unit.status_text === 'moving' ? null : unit.target,
+        status_text: reached && unit.status_text === 'moving' ? 'ready' : unit.status_text,
+      };
+    }),
+  };
+}
+
 export function advanceMockSessionState(
   state: SessionState,
   terrainGrid: SessionTerrainCellData[][],
@@ -329,10 +653,12 @@ export function advanceMockSessionState(
   }
 
   const airSupportState = advanceAirSupportMissions(state, terrainGrid, seed);
+  const casualtyCheckedState = resolveGroundCrewCasualties(airSupportState);
+  const movementState = advanceUnits(casualtyCheckedState, terrainGrid);
 
-  const staticCells = airSupportState.cells.filter((cell) => cell.state !== 'fire' && cell.state !== 'burned');
-  const currentFire = airSupportState.cells.filter((cell) => cell.state === 'fire');
-  const burnedCells = airSupportState.cells.filter((cell) => cell.state === 'burned');
+  const staticCells = movementState.cells.filter((cell) => cell.state !== 'fire' && cell.state !== 'burned');
+  const currentFire = movementState.cells.filter((cell) => cell.state === 'fire');
+  const burnedCells = movementState.cells.filter((cell) => cell.state === 'burned');
   const occupied = new Set<string>([
     ...staticCells.map((cell) => coordinateKey(cell.row, cell.col)),
     ...burnedCells.map((cell) => coordinateKey(cell.row, cell.col)),
@@ -342,13 +668,13 @@ export function advanceMockSessionState(
   const nextFire: Cell[] = [];
   const nextBurned = [...burnedCells];
   const newKeys = new Set<string>();
-  const burnoutUnlocked = naturalBurnoutUnlocked(airSupportState);
+  const burnoutUnlocked = naturalBurnoutUnlocked(movementState);
 
   for (const cell of currentFire) {
     const remainingFuel = Math.max(0, cell.fuel - 0.045);
     if (remainingFuel <= 0.01) {
       if (!burnoutUnlocked) {
-        nextFire.push({ ...cell, fuel: 0.01, moisture: getMoisture(cell.row, cell.col, terrainGrid, airSupportState) });
+        nextFire.push({ ...cell, fuel: 0.01, moisture: getMoisture(cell.row, cell.col, terrainGrid, movementState) });
         continue;
       }
       nextBurned.push({ ...cell, state: 'burned', fuel: 0, moisture: 0 });
@@ -365,7 +691,7 @@ export function advanceMockSessionState(
       const row = source.row + neighbour.dr;
       const col = source.col + neighbour.dc;
 
-      if (row < 0 || col < 0 || row >= airSupportState.grid_size || col >= airSupportState.grid_size) continue;
+      if (row < 0 || col < 0 || row >= movementState.grid_size || col >= movementState.grid_size) continue;
 
       const key = coordinateKey(row, col);
       if (occupied.has(key) || newKeys.has(key)) continue;
@@ -376,13 +702,13 @@ export function advanceMockSessionState(
         row,
         col,
         terrainGrid,
-        airSupportState,
-        airSupportState.wind.direction,
-        airSupportState.wind.speed_mph,
+        movementState,
+        movementState.wind.direction,
+        movementState.wind.speed_mph,
         neighbour.diagonal,
       );
       const roll = randomFromSeed(
-        seed + airSupportState.tick * 10007 + source.row * 431 + source.col * 863 + row * 1733 + col * 3467,
+        seed + movementState.tick * 10007 + source.row * 431 + source.col * 863 + row * 1733 + col * 3467,
       );
       if (roll >= probability) continue;
 
@@ -397,16 +723,17 @@ export function advanceMockSessionState(
     }
   }
 
-  const villageCells = buildVillageSet(airSupportState);
+  const villageCells = buildVillageSet(movementState);
   const activeVillageFire = nextFire.some((cell) => villageCells.has(coordinateKey(cell.row, cell.col)));
 
   const nextState: SessionState = {
-    ...airSupportState,
-    tick: airSupportState.tick + 1,
+    ...movementState,
+    tick: movementState.tick + 1,
     status: activeVillageFire ? 'lost' : nextFire.length === 0 && burnoutUnlocked ? 'won' : 'running',
     cells: [...staticCells, ...nextBurned, ...nextFire],
   };
 
-  nextState.score = buildScore(nextState, villageCells);
-  return nextState;
+  const casualtyResolvedState = resolveGroundCrewCasualties(nextState);
+  casualtyResolvedState.score = buildScore(casualtyResolvedState, villageCells);
+  return casualtyResolvedState;
 }

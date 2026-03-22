@@ -217,6 +217,7 @@ class SessionRuntime:
                 await self._emit_event(
                     event_type=f"simulation.{mutation['kind']}", payload=mutation
                 )
+                await self._emit_mutation_radio(mutation=mutation)
 
             await self._emit_snapshot()
 
@@ -249,6 +250,77 @@ class SessionRuntime:
             session_state=self._session_state,
             message=radio_message,
         )
+
+    async def _emit_mutation_radio(self, mutation: dict[str, object]) -> None:
+        """Publish radio lines for high-signal simulation mutations."""
+        kind = str(mutation.get("kind", ""))
+        radio_message: RadioMessage | None = None
+
+        if kind == "air_support_dispatched":
+            aircraft_model = str(mutation.get("aircraft_model", "Airtanker"))
+            payload_type = str(mutation.get("payload_type", "retardant"))
+            drop_start = self._format_coordinate(mutation.get("drop_start"))
+            drop_end = self._format_coordinate(mutation.get("drop_end"))
+            route_text = (
+                f" Run from grid {drop_start} to {drop_end}."
+                if drop_start is not None and drop_end is not None
+                else ""
+            )
+            radio_message = RadioMessage(
+                speaker="Watchtower",
+                voice_key="command",
+                text=f"{aircraft_model} inbound with {payload_type}.{route_text}",
+            )
+
+        elif kind == "air_support_drop":
+            aircraft_model = str(mutation.get("aircraft_model", "Airtanker"))
+            payload_type = str(mutation.get("payload_type", "retardant"))
+            drop_start = self._format_coordinate(mutation.get("drop_start"))
+            drop_end = self._format_coordinate(mutation.get("drop_end"))
+            route_text = (
+                f" from grid {drop_start} to {drop_end}"
+                if drop_start is not None and drop_end is not None
+                else ""
+            )
+            radio_message = RadioMessage(
+                speaker=aircraft_model,
+                voice_key="helicopter",
+                text=f"{payload_type.title()} drop underway{route_text}.",
+            )
+
+        elif kind == "air_support_completed":
+            aircraft_model = str(mutation.get("aircraft_model", "Airtanker"))
+            radio_message = RadioMessage(
+                speaker=aircraft_model,
+                voice_key="helicopter",
+                text="Drop complete, exiting sector.",
+            )
+
+        elif kind == "unit_killed":
+            label = str(mutation.get("label", "Ground crew"))
+            radio_message = RadioMessage(
+                speaker="Watchtower",
+                voice_key="command",
+                text=f"{label} is overrun. Marking unit lost.",
+            )
+
+        if radio_message is None:
+            return
+        await self._radio_sink.publish(
+            session_state=self._session_state,
+            message=radio_message,
+        )
+
+    def _format_coordinate(self, value: object) -> str | None:
+        """Render one coordinate payload as a compact grid string."""
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            try:
+                x = int(value[0])
+                y = int(value[1])
+            except (TypeError, ValueError):
+                return None
+            return f"{x},{y}"
+        return None
 
     async def _emit_event(self, event_type: str, payload: dict[str, object]) -> None:
         """Emit one typed session event."""

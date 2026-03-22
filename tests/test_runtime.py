@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from watchtower_backend.domain.commands import UnitCommand
-from watchtower_backend.domain.models.simulation import CommandAction
+from watchtower_backend.domain.models.simulation import AirSupportPayload, CommandAction
 from watchtower_backend.persistence.replay_store import ReplayStore
 from watchtower_backend.services.sessions.runtime import SessionRuntime, build_initial_state
 from watchtower_backend.domain.models.simulation import WindState
@@ -53,9 +53,31 @@ class _SlowCommandPlanner(_FakePlanner):
         ]
 
 
+class _AirSupportPlanner(_FakePlanner):
+    async def plan(self, session_state):  # type: ignore[no-untyped-def]
+        self.calls.append(session_state.tick)
+        return [
+            UnitCommand(
+                session_id=session_state.id,
+                unit_id="tower",
+                action=CommandAction.CALL_AIR_SUPPORT,
+                target=(12, 12),
+                rationale="Dispatch a retardant line.",
+                state_version=session_state.version,
+                air_support_payload=AirSupportPayload.RETARDANT,
+                drop_start=(8, 8),
+                drop_end=(14, 14),
+            )
+        ]
+
+
 class _FakeRadioSink:
+    def __init__(self) -> None:
+        self.messages = []
+
     async def publish(self, session_state, message):  # type: ignore[no-untyped-def]
-        _ = (session_state, message)
+        _ = session_state
+        self.messages.append(message)
 
 
 async def test_session_runtime_runs_planner_immediately(tmp_path) -> None:
@@ -141,5 +163,36 @@ async def test_session_runtime_applies_slow_planner_commands_once_ready(tmp_path
 
     assert planner.calls == [0]
     assert current.tick > 0
-    assert heli.target == (5, 5)
-    assert heli.status_text == "moving"
+    assert heli.position == (5, 5)
+    assert heli.target is None
+    assert heli.status_text == "ready"
+
+
+async def test_session_runtime_emits_air_support_radio_updates(tmp_path) -> None:
+    """Air-support missions should speak on dispatch, drop, and exit."""
+    planner = _AirSupportPlanner()
+    radio_sink = _FakeRadioSink()
+    runtime = SessionRuntime(
+        session_state=build_initial_state(
+            doctrine_text="Protect the village.",
+            doctrine_title="Doctrine",
+            wind=WindState(direction="NE", speed_mph=10.0),
+            grid_size=24,
+        ),
+        planner=planner,
+        radio_sink=radio_sink,
+        replay_store=ReplayStore(root_directory=tmp_path / "replays"),
+        tick_interval_seconds=0.01,
+        planner_interval_seconds=99999.0,
+        max_event_backlog=10,
+        seed=123,
+    )
+
+    await runtime.start()
+    await asyncio.sleep(0.12)
+    await runtime.stop()
+
+    texts = [message.text for message in radio_sink.messages]
+    assert any(message.speaker == "Watchtower" and "inbound" in message.text for message in radio_sink.messages)
+    assert any("drop underway" in text for text in texts)
+    assert any("Drop complete, exiting sector." == text for text in texts)

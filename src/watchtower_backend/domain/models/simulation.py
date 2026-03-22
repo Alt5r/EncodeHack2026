@@ -129,6 +129,7 @@ class UnitState(BaseModel):
     water_capacity: int = Field(default=0, ge=0)
     water_remaining: int = Field(default=0, ge=0)
     firebreak_strength: int = Field(default=0, ge=0)
+    is_active: bool = True
     status_text: str = Field(default="ready", min_length=1, max_length=200)
 
 

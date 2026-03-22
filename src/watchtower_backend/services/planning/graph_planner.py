@@ -119,6 +119,35 @@ def _target_in_grid(session: SessionState, target: tuple[int, int]) -> bool:
     return 0 <= x < session.grid_size and 0 <= y < session.grid_size
 
 
+def _preview_firebreak_cells(
+    session: SessionState,
+    target: tuple[int, int],
+) -> list[tuple[int, int]]:
+    max_index = session.grid_size - 1
+    cells: list[tuple[int, int]] = []
+    for offset in range(-1, 2):
+        cell = (
+            max(0, min(max_index, target[0] + offset)),
+            max(0, min(max_index, target[1])),
+        )
+        if cell not in cells:
+            cells.append(cell)
+    return cells
+
+
+def _ground_target_safe(
+    session: SessionState,
+    action: CommandAction,
+    target: tuple[int, int],
+) -> bool:
+    fire_cells = set(session.fire_cells)
+    if target in fire_cells:
+        return False
+    if action is CommandAction.CREATE_FIREBREAK:
+        return not any(cell in fire_cells for cell in _preview_firebreak_cells(session, target))
+    return True
+
+
 class LangGraphPlanner:
     """Hierarchical planner: Sonnet orchestrator + Haiku sub-agents (LangGraph Send).
 
@@ -296,7 +325,7 @@ class LangGraphPlanner:
             if not text:
                 continue
             unit = next((u for u in session_state.units if u.id == unit_id), None)
-            if unit is None or unit.unit_type is UnitType.ORCHESTRATOR:
+            if unit is None or unit.unit_type is UnitType.ORCHESTRATOR or not unit.is_active:
                 continue
             voice = (
                 "helicopter"
@@ -345,7 +374,9 @@ class LangGraphPlanner:
             missions_out: list[dict[str, Any]] = []
             direct_commands: list[dict[str, Any]] = []
             valid_ids = {
-                u.id for u in session.units if u.unit_type is not UnitType.ORCHESTRATOR
+                u.id
+                for u in session.units
+                if u.unit_type is not UnitType.ORCHESTRATOR and u.is_active
             }
             for row in parsed.missions:
                 if row.agent_id not in valid_ids:
@@ -426,7 +457,7 @@ class LangGraphPlanner:
         )
         priority = mission.priority
         unit = next((u for u in session.units if u.id == mission.agent_id), None)
-        if unit is None or unit.unit_type is UnitType.ORCHESTRATOR:
+        if unit is None or unit.unit_type is UnitType.ORCHESTRATOR or not unit.is_active:
             return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
 
         prompt = build_subagent_prompt(session_state=session, mission=mission)
@@ -473,6 +504,12 @@ class LangGraphPlanner:
 
         if not _action_allowed(unit.unit_type, payload.action):
             return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
+        if unit.unit_type is UnitType.GROUND_CREW and not _ground_target_safe(
+            session,
+            payload.action,
+            target,
+        ):
+            return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
 
         command = UnitCommand(
             session_id=session.id,
@@ -508,7 +545,7 @@ class LangGraphPlanner:
             except Exception:
                 continue
             unit = next((u for u in session.units if u.id == cmd.unit_id), None)
-            if unit is None or unit.unit_type is not UnitType.ORCHESTRATOR:
+            if unit is None or unit.unit_type is not UnitType.ORCHESTRATOR or not unit.is_active:
                 continue
             if cmd.state_version != session.version:
                 continue
@@ -537,13 +574,19 @@ class LangGraphPlanner:
             except Exception:
                 continue
             unit = next((u for u in session.units if u.id == cmd.unit_id), None)
-            if unit is None or unit.unit_type is UnitType.ORCHESTRATOR:
+            if unit is None or unit.unit_type is UnitType.ORCHESTRATOR or not unit.is_active:
                 continue
             if cmd.state_version != session.version:
                 continue
             if not _action_allowed(unit.unit_type, cmd.action):
                 continue
             if not _target_in_grid(session, cmd.target):
+                continue
+            if unit.unit_type is UnitType.GROUND_CREW and not _ground_target_safe(
+                session,
+                cmd.action,
+                cmd.target,
+            ):
                 continue
             commands.append(cmd)
 
