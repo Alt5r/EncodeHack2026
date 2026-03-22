@@ -76,9 +76,13 @@ class Settings(BaseSettings):
     )
     elevenlabs_model_id: str = Field(default="eleven_multilingual_v2")
     elevenlabs_output_format: str = Field(default="mp3_44100_128")
-    elevenlabs_command_voice_id: str | None = Field(default=None)
-    elevenlabs_helicopter_voice_id: str | None = Field(default=None)
-    elevenlabs_ground_voice_id: str | None = Field(default=None)
+    # Pre-made ElevenLabs voices — override via env vars if desired.
+    # pNInz6obpgDQGcFmaJgB = Adam  (deep, authoritative — command)
+    # TxGEqnHWrfWFTfGW9XjX = Josh  (clear, operational — helicopter)
+    # yoZ06aMxZJJ28mfd3POQ = Sam   (raspy, gritty — ground crew)
+    elevenlabs_command_voice_id: str = Field(default="pNInz6obpgDQGcFmaJgB")
+    elevenlabs_helicopter_voice_id: str = Field(default="TxGEqnHWrfWFTfGW9XjX")
+    elevenlabs_ground_voice_id: str = Field(default="yoZ06aMxZJJ28mfd3POQ")
     luffa_robot_key: str | None = Field(default=None)
     luffa_group_uid: str | None = Field(default=None)
 
