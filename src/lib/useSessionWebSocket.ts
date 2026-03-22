@@ -70,9 +70,13 @@ export function useSessionWebSocket(
       setConnectionError('WebSocket error');
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (unmountedRef.current) return;
       setConnectionState(false);
+      if (event.code === 4404) {
+        setConnectionError('Session ended');
+        return;
+      }
 
       // Exponential backoff: 1s → 2s → 4s → 8s max
       const delay = Math.min(1000 * 2 ** reconnectAttempt.current, 8000);

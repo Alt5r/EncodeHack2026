@@ -53,6 +53,8 @@ export default function Home() {
   const [suppressedCells, setSuppressedCells] = useState(0);
   const [firebreakCells, setFirebreakCells] = useState(0);
   const [villageDamage, setVillageDamage] = useState(0);
+  const loggedAirSupportMissionIdsRef = useRef<Set<string>>(new Set());
+  const lastLiveConnectionRef = useRef(false);
 
   // voice_key lookup — radio.audio_ready doesn't include voice_key,
   // so we stash it when radio.message arrives
@@ -121,6 +123,9 @@ export default function Home() {
       return data.id as string;
     } catch {
       // Backend not available — fall back to mock
+      console.warn(
+        '[WATCHTOWER][MOCK] Session creation fell back to mock mode. Live backend agents are not controlling this run.',
+      );
       return 'mock-session';
     }
   }, []);
@@ -138,6 +143,17 @@ export default function Home() {
       setFirebreakCells(sessionId === 'mock-session' ? MOCK_STATE.score.firebreak_cells : 0);
       setVillageDamage(sessionId === 'mock-session' ? MOCK_STATE.score.village_damage : 0);
       setSelectedCell(null);
+      loggedAirSupportMissionIdsRef.current.clear();
+      lastLiveConnectionRef.current = false;
+      if (sessionId === 'mock-session') {
+        console.warn(
+          '[WATCHTOWER][MOCK] Running mock fallback session. Any air-support decisions you see are not live agent behavior.',
+        );
+      } else {
+        console.info(
+          `[WATCHTOWER][LIVE] Created backend session ${sessionId}. Waiting for live planner decisions.`,
+        );
+      }
       setScreen({ kind: 'game', sessionId });
     },
     [createSession],
@@ -149,7 +165,7 @@ export default function Home() {
     ? screen.sessionId
     : null;
 
-  useSessionWebSocket(activeSessionId, {
+  const { isConnected: isLiveSessionConnected, error: liveSessionError } = useSessionWebSocket(activeSessionId, {
     onMessage: useCallback(
       (envelope: BroadcastEnvelope) => {
         // Handle snapshot envelopes (full state dumps)
@@ -196,6 +212,22 @@ export default function Home() {
           return;
         }
 
+        if (type === 'simulation.air_support_dispatched') {
+          const p = payload as {
+            mission_id?: string;
+            payload_type?: string;
+            target?: [number, number];
+            unit_id?: string;
+          };
+          console.info('[WATCHTOWER][LIVE][AGENT] Air-support mission dispatched by the live planner.', {
+            sessionId: activeSessionId,
+            missionId: p.mission_id ?? 'unknown',
+            payloadType: p.payload_type ?? 'unknown',
+            target: p.target ?? null,
+            sourceUnit: p.unit_id ?? 'tower',
+          });
+        }
+
         if (type === 'radio.message') {
           const p = payload as RadioMessagePayload;
           voiceKeyMap.current.set(p.message_id, p.voice_key);
@@ -229,9 +261,56 @@ export default function Home() {
           });
         }
       },
-      [tickToTime, enqueueAudio],
+      [activeSessionId, tickToTime, enqueueAudio],
     ),
   });
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      lastLiveConnectionRef.current = false;
+      return;
+    }
+    if (isLiveSessionConnected && !lastLiveConnectionRef.current) {
+      console.info(
+        `[WATCHTOWER][LIVE] WebSocket connected for session ${activeSessionId}. Frontend is now receiving live backend planner output.`,
+      );
+    }
+    lastLiveConnectionRef.current = isLiveSessionConnected;
+  }, [activeSessionId, isLiveSessionConnected]);
+
+  useEffect(() => {
+    if (screen.kind !== 'game') {
+      loggedAirSupportMissionIdsRef.current.clear();
+      return;
+    }
+
+    for (const mission of gameState.airSupportMissions) {
+      if (loggedAirSupportMissionIdsRef.current.has(mission.id)) {
+        continue;
+      }
+      loggedAirSupportMissionIdsRef.current.add(mission.id);
+
+      const missionSummary = {
+        missionId: mission.id,
+        aircraftModel: mission.aircraftModel,
+        payloadType: mission.payloadType,
+        dropStart: mission.dropStart,
+        dropEnd: mission.dropEnd,
+      };
+
+      if (isMockSession) {
+        console.warn(
+          '[WATCHTOWER][MOCK] Mock fallback generated an air-support mission.',
+          missionSummary,
+        );
+      } else {
+        console.info(
+          '[WATCHTOWER][LIVE] Air-support mission observed from backend snapshot.',
+          missionSummary,
+        );
+      }
+    }
+  }, [screen.kind, isMockSession, gameState.airSupportMissions]);
 
   useEffect(() => {
     if (!isMockSession || !mockTerrainGrid) return;
@@ -374,6 +453,63 @@ export default function Home() {
         >
           {showGrid ? 'Hide Grid' : 'Show Grid'}
         </button>
+
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 12,
+            zIndex: 10,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: 6,
+          }}
+        >
+          <div
+            style={{
+              padding: '6px 12px',
+              background: isMockSession
+                ? 'rgba(92, 61, 94, 0.82)'
+                : isLiveSessionConnected
+                  ? 'rgba(79, 155, 109, 0.22)'
+                  : 'rgba(0, 0, 0, 0.5)',
+              color: isMockSession
+                ? GAME_PALETTE.accentStrong
+                : isLiveSessionConnected
+                  ? 'rgba(175, 240, 192, 0.95)'
+                  : GAME_PALETTE.textPrimary,
+              border: `1px solid ${GAME_PALETTE.panelOutline}`,
+              borderRadius: 4,
+              fontSize: 11,
+              fontFamily: '"Courier New", Courier, monospace',
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              backdropFilter: 'blur(10px)',
+            }}
+          >
+            {isMockSession ? 'Mock Fallback' : isLiveSessionConnected ? 'Live Backend' : 'Connecting'}
+          </div>
+          {!isMockSession && liveSessionError ? (
+            <div
+              style={{
+                maxWidth: 220,
+                padding: '5px 9px',
+                background: 'rgba(0, 0, 0, 0.5)',
+                color: GAME_PALETTE.textSecondary,
+                border: `1px solid ${GAME_PALETTE.panelOutline}`,
+                borderRadius: 4,
+                fontSize: 10,
+                fontFamily: '"Courier New", Courier, monospace',
+                letterSpacing: '0.04em',
+                textTransform: 'uppercase',
+                textAlign: 'right',
+              }}
+            >
+              {liveSessionError}
+            </div>
+          ) : null}
+        </div>
 
       </div>
 

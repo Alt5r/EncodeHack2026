@@ -2,9 +2,12 @@
 
 from watchtower_backend.domain.commands import UnitCommand
 from watchtower_backend.domain.models.simulation import (
+    AirSupportPayload,
+    AirSupportPhase,
     CommandAction,
     FireIntensity,
     TerrainCell,
+    TreatedCellState,
     VegetationType,
     WaterType,
     WindState,
@@ -441,3 +444,196 @@ def test_firebreak_blocks_terrain_aware_spread() -> None:
         assert 10 < cell[0] < 14 and 10 < cell[1] < 14, (
             f"Fire escaped firebreak to {cell}"
         )
+
+
+def test_call_air_support_creates_mission_with_requested_geometry() -> None:
+    """Tower air-support commands should preserve planner-provided route geometry."""
+    engine = _make_engine(fire_cells=[(10, 10), (11, 11)], seed=11)
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="tower",
+                action=CommandAction.CALL_AIR_SUPPORT,
+                target=(11, 11),
+                rationale="Lay retardant ahead of the fire front.",
+                state_version=1,
+                air_support_payload=AirSupportPayload.RETARDANT,
+                approach_points=[(-8, 10), (1, 10)],
+                drop_start=(8, 8),
+                drop_end=(14, 14),
+            )
+        ]
+    )
+
+    assert len(engine.session_state.air_support_missions) == 1
+    mission = engine.session_state.air_support_missions[0]
+    assert mission.payload_type is AirSupportPayload.RETARDANT
+    assert mission.phase is AirSupportPhase.APPROACH
+    assert mission.progress == 0.0
+    assert mission.drop_start == (8, 8)
+    assert mission.drop_end == (14, 14)
+    assert mission.approach_points == [(-8, 10), (1, 10), (8, 8)]
+
+
+def test_air_support_drop_creates_treated_cells() -> None:
+    """An air-support mission should create lingering treated terrain on the drop run."""
+    engine = _make_engine(fire_cells=[(10, 10), (11, 11), (12, 12)], seed=12)
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="tower",
+                action=CommandAction.CALL_AIR_SUPPORT,
+                target=(11, 11),
+                rationale="Lay retardant ahead of the fire front.",
+                state_version=1,
+                air_support_payload=AirSupportPayload.RETARDANT,
+                drop_start=(8, 8),
+                drop_end=(14, 14),
+            )
+        ]
+    )
+    engine.step(commands=[])
+    mutations = engine.step(commands=[])
+
+    assert any(mutation["kind"] == "air_support_drop" for mutation in mutations)
+    assert engine.session_state.treated_cells
+    assert any(cell.coordinate == (11, 11) for cell in engine.session_state.treated_cells)
+    assert engine.session_state.air_support_missions
+    assert engine.session_state.air_support_missions[0].phase is AirSupportPhase.DROP
+
+
+def test_treated_cells_reduce_spread_probability() -> None:
+    """Retardant-treated cells should become materially harder to ignite."""
+    engine = _make_engine(
+        fire_cells=[(12, 12)],
+        terrain_grid=_make_terrain_grid(size=24, vegetation=VegetationType.FOREST),
+        wind_speed=0.0,
+        seed=13,
+    )
+    source = (12, 12)
+    target = (12, 13)
+    source_terrain = engine._get_terrain(source)
+    target_terrain = engine._get_terrain(target)
+    fire_state = engine._fire_states[source]
+
+    untreated_probability = engine._calc_spread_probability(
+        source=source,
+        target=target,
+        source_terrain=source_terrain,
+        target_terrain=target_terrain,
+        fire_state=fire_state,
+        wind_vec=(0.0, 0.0),
+        wind_speed=0.0,
+        is_diagonal=False,
+    )
+
+    engine.session_state.treated_cells = [
+        TreatedCellState(
+            coordinate=target,
+            payload_type=AirSupportPayload.RETARDANT,
+            strength=1.0,
+            remaining_ticks=10,
+        )
+    ]
+
+    treated_probability = engine._calc_spread_probability(
+        source=source,
+        target=target,
+        source_terrain=source_terrain,
+        target_terrain=target_terrain,
+        fire_state=fire_state,
+        wind_vec=(0.0, 0.0),
+        wind_speed=0.0,
+        is_diagonal=False,
+    )
+
+    assert treated_probability < untreated_probability
+
+
+def test_invalid_command_does_not_freeze_air_support_progress() -> None:
+    """Rejected unit commands must not stop active aircraft missions from advancing."""
+    engine = _make_engine(fire_cells=[(10, 10), (11, 11)], seed=14)
+    heli = next(unit for unit in engine.session_state.units if unit.id == "heli-alpha")
+    heli.water_remaining = 0
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="tower",
+                action=CommandAction.CALL_AIR_SUPPORT,
+                target=(11, 11),
+                rationale="Lay retardant ahead of the fire front.",
+                state_version=1,
+                air_support_payload=AirSupportPayload.RETARDANT,
+                drop_start=(8, 8),
+                drop_end=(14, 14),
+            )
+        ]
+    )
+
+    mutations = engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="heli-alpha",
+                action=CommandAction.DROP_WATER,
+                target=(10, 10),
+                rationale="Invalid because the helicopter is dry.",
+                state_version=2,
+            )
+        ]
+    )
+
+    assert any(mutation["kind"] == "command_rejected" for mutation in mutations)
+    assert len(engine.session_state.air_support_missions) == 1
+    assert engine.session_state.air_support_missions[0].phase is AirSupportPhase.APPROACH
+    assert engine.session_state.air_support_missions[0].progress > 0
+
+
+def test_only_one_air_support_mission_can_be_active() -> None:
+    """Live agent air support should behave like the fallback path: one run at a time."""
+    engine = _make_engine(fire_cells=[(10, 10), (11, 11)], seed=15)
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="tower",
+                action=CommandAction.CALL_AIR_SUPPORT,
+                target=(11, 11),
+                rationale="First run.",
+                state_version=1,
+                air_support_payload=AirSupportPayload.RETARDANT,
+                drop_start=(8, 8),
+                drop_end=(14, 14),
+            )
+        ]
+    )
+
+    mutations = engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="tower",
+                action=CommandAction.CALL_AIR_SUPPORT,
+                target=(12, 12),
+                rationale="Second run should be deferred.",
+                state_version=2,
+                air_support_payload=AirSupportPayload.WATER,
+                drop_start=(9, 9),
+                drop_end=(15, 15),
+            )
+        ]
+    )
+
+    assert len(engine.session_state.air_support_missions) == 1
+    assert any(
+        mutation["kind"] == "command_rejected"
+        and "Air-support mission already active" in str(mutation["reason"])
+        for mutation in mutations
+    )

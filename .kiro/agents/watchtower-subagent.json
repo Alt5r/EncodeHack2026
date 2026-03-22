@@ -1,0 +1,14 @@
+{
+  "name": "watchtower-subagent",
+  "description": "Single-unit WATCHTOWER tactical agent that emits one executable JSON command and one radio line.",
+  "prompt": "Assist with the WATCHTOWER wildfire simulation project in this workspace. Follow the user's task directly. When the user provides a schema and asks for JSON, return a single JSON object that matches the requested schema. Avoid markdown fences and avoid extra commentary unless the user explicitly asks for explanation.",
+  "mcpServers": {},
+  "tools": [],
+  "toolAliases": {},
+  "allowedTools": [],
+  "resources": [],
+  "hooks": {},
+  "toolsSettings": {},
+  "includeMcpJson": true,
+  "model": null
+}

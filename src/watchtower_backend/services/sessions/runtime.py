@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from watchtower_backend.core.errors import CommandValidationError
@@ -73,6 +73,7 @@ class SessionRuntime:
         )
         self._broadcaster = SessionBroadcaster(max_backlog=max_event_backlog)
         self._task: asyncio.Task[None] | None = None
+        self._planner_task: asyncio.Task[list[UnitCommand]] | None = None
         self._stop_event = asyncio.Event()
         self._session_event_listener = session_event_listener
 
@@ -113,6 +114,11 @@ class SessionRuntime:
             self._session_state.status = status
 
         self._stop_event.set()
+        if self._planner_task is not None:
+            self._planner_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._planner_task
+            self._planner_task = None
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -155,17 +161,44 @@ class SessionRuntime:
                 "wind": self._session_state.wind.model_dump(mode="json"),
             },
         )
-        last_plan_at = datetime.now(tz=UTC)
+        # Start one planning round immediately, but do not block the simulation
+        # loop on slow planner responses.
+        last_plan_requested_at = datetime.now(tz=UTC) - timedelta(
+            seconds=self._planner_interval_seconds
+        )
         while not self._stop_event.is_set():
             commands: list[UnitCommand] = []
             now = datetime.now(tz=UTC)
-            if (now - last_plan_at).total_seconds() >= self._planner_interval_seconds:
-                commands = await self._planner.plan(
-                    session_state=self._session_state.model_copy(deep=True)
-                )
-                last_plan_at = now
-                if getattr(self._planner, "bundles_command_radio", True):
+            if self._planner_task is not None and self._planner_task.done():
+                try:
+                    commands = [
+                        command.model_copy(update={"state_version": self._session_state.version})
+                        for command in self._planner_task.result()
+                    ]
+                except asyncio.CancelledError:
+                    commands = []
+                except Exception:
+                    logger.exception(
+                        "Planner task failed unexpectedly.",
+                        extra={"session_id": self._session_state.id},
+                    )
+                    commands = []
+                self._planner_task = None
+                if commands and getattr(self._planner, "bundles_command_radio", True):
                     await self._emit_planner_messages(commands=commands)
+
+            if (
+                self._planner_task is None
+                and (now - last_plan_requested_at).total_seconds()
+                >= self._planner_interval_seconds
+            ):
+                self._planner_task = asyncio.create_task(
+                    self._planner.plan(
+                        session_state=self._session_state.model_copy(deep=True)
+                    ),
+                    name=f"planner-{self._session_state.id}",
+                )
+                last_plan_requested_at = now
 
             try:
                 mutations = self._engine.step(commands=commands)

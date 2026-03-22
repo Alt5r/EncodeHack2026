@@ -62,6 +62,7 @@ async def test_langgraph_planner_runs_graph_and_returns_command() -> None:
         fallback_planner=HeuristicPlanner(),
         anthropic_client=_FakeAnthropicClient([orch, sub]),
         radio_sink=None,
+        use_kiro=False,
     )
 
     commands = await planner.plan(session_state=state)
@@ -86,8 +87,136 @@ async def test_langgraph_planner_falls_back_without_client() -> None:
         max_tokens=100,
         fallback_planner=HeuristicPlanner(),
         anthropic_client=None,
+        use_kiro=False,
     )
 
     commands = await planner.plan(session_state=state)
 
     assert len(commands) >= 1
+
+
+async def test_langgraph_planner_uses_kiro_path_when_enabled(monkeypatch) -> None:
+    """With Kiro enabled, the planner should accept orchestrator and sub-agent JSON."""
+    state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    planner = LangGraphPlanner(
+        orchestrator_model="unused",
+        subagent_model="unused",
+        timeout_seconds=5.0,
+        max_tokens=100,
+        fallback_planner=HeuristicPlanner(),
+        anthropic_client=None,
+        use_kiro=True,
+    )
+
+    async def fake_call(agent_name: str, _: str) -> str:
+        if agent_name == "watchtower-orchestrator":
+            return (
+                '{"missions":[{"agent_id":"heli-alpha","intent":"suppress",'
+                '"target_x":4,"target_y":12,"priority":10,"reason":"lead edge"}]}'
+            )
+        return (
+            '{"unit_id":"heli-alpha","action":"drop_water","target_x":4,"target_y":12,'
+            '"rationale":"Suppressing.","radio_message":"Dropping on the fire now."}'
+        )
+
+    monkeypatch.setattr(planner, "_call_kiro", fake_call)
+
+    commands = await planner.plan(session_state=state)
+
+    assert len(commands) == 1
+    assert commands[0].unit_id == "heli-alpha"
+    assert commands[0].target == (4, 12)
+
+
+async def test_langgraph_planner_accepts_orchestrator_air_support_requests(monkeypatch) -> None:
+    """The Kiro orchestrator path should pass through direct air-support commands."""
+    state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    planner = LangGraphPlanner(
+        orchestrator_model="unused",
+        subagent_model="unused",
+        timeout_seconds=5.0,
+        max_tokens=100,
+        fallback_planner=HeuristicPlanner(),
+        anthropic_client=None,
+        use_kiro=True,
+    )
+
+    async def fake_call(agent_name: str, _: str) -> str:
+        if agent_name == "watchtower-orchestrator":
+            return (
+                '{"missions":[{"agent_id":"heli-alpha","intent":"suppress","target_x":4,"target_y":12,'
+                '"priority":10,"reason":"lead edge"}],'
+                '"air_support_requests":[{"action":"call_air_support","payload_type":"retardant",'
+                '"target_x":6,"target_y":13,"drop_start_x":4,"drop_start_y":10,"drop_end_x":8,'
+                '"drop_end_y":16,"approach_points":[{"x":-8,"y":10},{"x":1,"y":12}],'
+                '"priority":800,"rationale":"shield the village flank"}]}'
+            )
+        return (
+            '{"unit_id":"heli-alpha","action":"drop_water","target_x":4,"target_y":12,'
+            '"rationale":"Suppressing.","radio_message":"Dropping on the fire now."}'
+        )
+
+    monkeypatch.setattr(planner, "_call_kiro", fake_call)
+
+    commands = await planner.plan(session_state=state)
+
+    assert len(commands) == 2
+    assert any(command.unit_id == "tower" and command.action.value == "call_air_support" for command in commands)
+    assert any(command.unit_id == "heli-alpha" and command.action.value == "drop_water" for command in commands)
+
+
+async def test_langgraph_planner_parses_kiro_wrapped_json(monkeypatch) -> None:
+    """Kiro-style prose and fenced JSON should still produce valid commands."""
+    state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    planner = LangGraphPlanner(
+        orchestrator_model="unused",
+        subagent_model="unused",
+        timeout_seconds=5.0,
+        max_tokens=100,
+        fallback_planner=HeuristicPlanner(),
+        anthropic_client=None,
+        use_kiro=True,
+    )
+
+    async def fake_call(agent_name: str, _: str) -> str:
+        if agent_name == "watchtower-orchestrator":
+            return (
+                "I can help with that.\n\n"
+                "```json\n"
+                '{"missions":[{"agent_id":"heli-alpha","intent":"suppress","target_x":4,"target_y":12,'
+                '"priority":10,"reason":"lead edge"}],"air_support_requests":[]}'
+                "\n```\n"
+                "This assigns the helicopter to the lead edge."
+            )
+        return (
+            "Sure.\n"
+            "```json\n"
+            '{"unit_id":"heli-alpha","action":"drop_water","target_x":4,"target_y":12,'
+            '"rationale":"Suppressing.","radio_message":"Dropping on the fire now."}'
+            "\n```\n"
+            "That is the legal unit command."
+        )
+
+    monkeypatch.setattr(planner, "_call_kiro", fake_call)
+
+    commands = await planner.plan(session_state=state)
+
+    assert len(commands) == 1
+    assert commands[0].unit_id == "heli-alpha"
+    assert commands[0].action.value == "drop_water"
+    assert commands[0].target == (4, 12)

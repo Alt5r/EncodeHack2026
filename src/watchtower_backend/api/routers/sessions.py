@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from watchtower_backend.core.errors import SessionNotFoundError
 from watchtower_backend.api.dependencies import SessionManagerDependency
 from watchtower_backend.api.schemas.sessions import SessionCreateRequest, SessionDetail, SessionRead
 from watchtower_backend.domain.models.simulation import TerrainCell
@@ -69,9 +70,14 @@ async def session_stream(
     session_id: str,
 ) -> None:
     """Stream snapshots and events for a session."""
-    await websocket.accept()
     session_manager: SessionManager = websocket.app.state.session_manager
-    subscriber_manager = await session_manager.subscribe(session_id=session_id)
+    try:
+        subscriber_manager = await session_manager.subscribe(session_id=session_id)
+    except SessionNotFoundError:
+        await websocket.close(code=4404, reason="Session not found")
+        return
+
+    await websocket.accept()
     try:
         async with subscriber_manager as queue:
             while True:

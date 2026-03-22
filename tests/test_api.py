@@ -30,6 +30,8 @@ def test_session_lifecycle_and_leaderboard(monkeypatch, tmp_path) -> None:
             json={"doctrine_text": "Protect the village at all costs.", "doctrine_title": "Shield"},
         )
         assert create_response.status_code == 200
+        assert create_response.json()["air_support_missions"] == []
+        assert create_response.json()["treated_cells"] == []
         session_id = create_response.json()["id"]
 
         session_response = client.get(f"/api/v1/sessions/{session_id}")

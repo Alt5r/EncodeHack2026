@@ -45,7 +45,7 @@ def build_planner_prompt(session_state: SessionState) -> str:
         "units": active_units,
     }
     return (
-        "You are the WATCHTOWER wildfire command planner.\n"
+        "Task: produce one JSON object for the WATCHTOWER wildfire simulation.\n"
         "Return only valid JSON with shape:\n"
         '{ "commands": ['
         '{"unit_id": "heli-alpha", "action": "drop_water", "target_x": 4, '
@@ -83,19 +83,41 @@ def build_orchestrator_prompt(session_state: SessionState) -> str:
         "village": session_state.village.model_dump(mode="json"),
         "fire_cells": session_state.fire_cells[:48],
         "firebreak_cells": session_state.firebreak_cells[:24],
+        "air_support_missions": [
+            {
+                "payload_type": mission.payload_type.value,
+                "phase": mission.phase.value,
+                "progress": mission.progress,
+                "drop_start": mission.drop_start,
+                "drop_end": mission.drop_end,
+            }
+            for mission in session_state.air_support_missions[:4]
+        ],
         "units": active_units,
     }
     return (
-        "You are the WATCHTOWER incident orchestrator (command level).\n"
+        "Task: produce one JSON object for the WATCHTOWER wildfire simulation orchestrator.\n"
         "Return only valid JSON with shape:\n"
         '{ "missions": [\n'
         '  {"agent_id": "heli-alpha", "intent": "suppress", "target_x": 4, "target_y": 12, '
         '"priority": 10, "reason": "why this unit gets this mission"}\n'
+        '], "air_support_requests": [\n'
+        '  {"action": "call_air_support", "payload_type": "retardant", "target_x": 6, "target_y": 14, '
+        '"drop_start_x": 4, "drop_start_y": 11, "drop_end_x": 8, "drop_end_y": 17, '
+        '"approach_points": [{"x": -8, "y": 10}, {"x": 1, "y": 12}], '
+        '"priority": 800, "rationale": "shield the village flank"}\n'
         "] }\n"
         "Rules:\n"
         "- Emit one mission per field unit listed (exclude orchestrator/tower).\n"
         "- intent: short verb phrase: suppress | firebreak | reserve | reposition | support.\n"
         "- target_x/target_y: focus cell on the grid (0..grid_size-1).\n"
+        "- air_support_requests are optional and are dispatched by the tower directly.\n"
+        "- Emit at most one air_support_request in a planning round.\n"
+        "- If an air_support_mission is already active in the state, do not request another one yet.\n"
+        "- Use air support when a straight retardant or water line will materially help contain the fire.\n"
+        "- payload_type: water | retardant.\n"
+        "- drop_start/drop_end are optional; omit them to let the simulation derive the run automatically.\n"
+        "- approach_points may be omitted or may include off-map entry points.\n"
         "- priority: 0-1000; higher = more urgent when resolving conflicts.\n"
         "- Align missions with the player's doctrine and protect the village.\n"
         "- Return JSON only, no markdown.\n\n"
@@ -147,13 +169,14 @@ def build_subagent_prompt(session_state: SessionState, mission: Mission) -> str:
         "wind": session_state.wind.model_dump(mode="json"),
     }
     return (
-        "You are a WATCHTOWER tactical agent for ONE unit.\n"
+        "Task: produce one JSON object for a single WATCHTOWER field unit.\n"
         "Return only valid JSON with shape:\n"
         '{"unit_id": "heli-alpha", "action": "drop_water", "target_x": 4, "target_y": 12, '
         '"rationale": "brief ops reason", "radio_message": "short voice line for the crew"}\n'
         "Rules:\n"
         "- unit_id must match the mission's agent_id.\n"
         "- Helicopters: actions move | drop_water | hold_position only.\n"
+        "- If helicopter water_remaining is 0, do not choose drop_water.\n"
         "- Ground crews: actions move | create_firebreak | hold_position only.\n"
         "- Targets must be within 0..grid_size-1.\n"
         "- radio_message: one short sentence, plain language, no JSON inside.\n"

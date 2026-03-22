@@ -20,7 +20,9 @@ from langgraph.types import Send
 
 # Kiro CLI binary — installed at this path on the dev machine
 _KIRO_CLI = Path.home() / ".local/bin/kiro-cli-chat"
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\[[?][0-9]*[lh]")
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", flags=re.DOTALL)
 
 from watchtower_backend.domain.commands import Mission, UnitCommand
 from watchtower_backend.domain.models.simulation import (
@@ -35,6 +37,7 @@ from watchtower_backend.services.planning.prompts import (
     build_subagent_prompt,
 )
 from watchtower_backend.services.planning.schemas import (
+    AirSupportRequestPayload,
     OrchestratorMissionsResponse,
     SubAgentLLMPayload,
 )
@@ -43,12 +46,42 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_json_object(raw_text: str) -> str:
-    """Extract the first JSON object from a raw model response."""
-    start_index = raw_text.find("{")
-    end_index = raw_text.rfind("}")
-    if start_index == -1 or end_index == -1 or end_index <= start_index:
-        raise ValueError("Planner response did not contain a JSON object.")
-    return raw_text[start_index : end_index + 1]
+    """Extract the first balanced JSON object from a raw model response."""
+    fenced_match = _FENCED_JSON_RE.search(raw_text)
+    if fenced_match is not None:
+        return fenced_match.group(1)
+
+    start_index: int | None = None
+    depth = 0
+    in_string = False
+    escape = False
+
+    for index, char in enumerate(raw_text):
+        if start_index is None:
+            if char == "{":
+                start_index = index
+                depth = 1
+            continue
+
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return raw_text[start_index : index + 1]
+
+    raise ValueError("Planner response did not contain a JSON object.")
 
 
 class PlanGraphState(TypedDict, total=False):
@@ -56,6 +89,7 @@ class PlanGraphState(TypedDict, total=False):
 
     session_json: dict[str, Any]
     missions: list[dict[str, Any]]
+    orchestrator_commands: list[dict[str, Any]]
     subagent_outputs: Annotated[list[dict[str, Any]], operator.add]
     commands: list[dict[str, Any]]
 
@@ -74,6 +108,8 @@ def _action_allowed(unit_type: UnitType, action: CommandAction) -> bool:
                 CommandAction.CREATE_FIREBREAK,
                 CommandAction.HOLD_POSITION,
             }
+        case UnitType.ORCHESTRATOR:
+            return action is CommandAction.CALL_AIR_SUPPORT
         case _:
             return False
 
@@ -106,6 +142,8 @@ class LangGraphPlanner:
         subagent_max_tokens: int | None = None,
         graph_invoke_timeout_seconds: float = 120.0,
         radio_sink: RadioSink | None = None,
+        use_kiro: bool | None = None,
+        workspace_root: Path | None = None,
     ) -> None:
         """Initialize the LangGraph-backed planner.
 
@@ -120,6 +158,8 @@ class LangGraphPlanner:
             subagent_max_tokens: Optional cap for sub-agent responses.
             graph_invoke_timeout_seconds: Wall-clock cap for the full planning graph.
             radio_sink: When set, sub-agent `radio_message` lines are queued for TTS/Luffa.
+            use_kiro: Force-enable or force-disable Kiro. Defaults to auto-detect.
+            workspace_root: Project root for workspace-local Kiro agent discovery.
         """
         self._orchestrator_model = orchestrator_model
         self._subagent_model = subagent_model
@@ -130,9 +170,14 @@ class LangGraphPlanner:
         self._fallback_planner = fallback_planner
         self._client = anthropic_client
         self._radio_sink = radio_sink
-        self._use_kiro = _KIRO_CLI.exists()
+        self._workspace_root = workspace_root or _WORKSPACE_ROOT
+        self._use_kiro = _KIRO_CLI.exists() if use_kiro is None else use_kiro
         if self._use_kiro:
-            logger.info("Kiro CLI detected at %s — using Kiro for agent inference.", _KIRO_CLI)
+            logger.info(
+                "Kiro CLI enabled at %s with workspace root %s.",
+                _KIRO_CLI,
+                self._workspace_root,
+            )
         self._graph = self._compile_graph()
 
     def _compile_graph(self) -> object:
@@ -171,11 +216,17 @@ class LangGraphPlanner:
             "chat",
             "--agent", agent_name,
             "--no-interactive",
+            cwd=str(self._workspace_root),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate(prompt.encode())
+        stdout, stderr = await proc.communicate(prompt.encode())
+        stderr_text = stderr.decode(errors="replace").strip()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Kiro agent '{agent_name}' failed with exit code {proc.returncode}: {stderr_text or 'no stderr'}"
+            )
         raw = stdout.decode(errors="replace")
         # Strip ANSI escape sequences and the "▸ Credits: X • Time: Xs" footer
         clean = _ANSI_RE.sub("", raw)
@@ -200,6 +251,7 @@ class LangGraphPlanner:
         initial: PlanGraphState = {
             "session_json": session_state.model_dump(mode="json"),
             "missions": [],
+            "orchestrator_commands": [],
             "subagent_outputs": [],
             "commands": [],
         }
@@ -291,6 +343,7 @@ class LangGraphPlanner:
                 orjson.loads(_extract_json_object(raw_text=content))
             )
             missions_out: list[dict[str, Any]] = []
+            direct_commands: list[dict[str, Any]] = []
             valid_ids = {
                 u.id for u in session.units if u.unit_type is not UnitType.ORCHESTRATOR
             }
@@ -309,13 +362,42 @@ class LangGraphPlanner:
                         "reason": row.reason,
                     }
                 )
-            return {"missions": missions_out}
+            if session.air_support_missions:
+                return {"missions": missions_out, "orchestrator_commands": []}
+
+            valid_requests = sorted(
+                parsed.air_support_requests,
+                key=lambda request: request.priority,
+                reverse=True,
+            )
+            for request in valid_requests[:1]:
+                if not _target_in_grid(session, (request.target_x, request.target_y)):
+                    continue
+                if (
+                    request.drop_start_x is not None
+                    and request.drop_start_y is not None
+                    and not _target_in_grid(session, (request.drop_start_x, request.drop_start_y))
+                ):
+                    continue
+                if (
+                    request.drop_end_x is not None
+                    and request.drop_end_y is not None
+                    and not _target_in_grid(session, (request.drop_end_x, request.drop_end_y))
+                ):
+                    continue
+                direct_commands.append(
+                    self._air_support_request_to_command(
+                        session=session,
+                        request=request,
+                    ).model_dump(mode="json")
+                )
+            return {"missions": missions_out, "orchestrator_commands": direct_commands}
         except Exception as error:
             logger.warning(
                 "Orchestrator node failed.",
                 extra={"session_id": session.id, "error": str(error)},
             )
-            return {"missions": []}
+            return {"missions": [], "orchestrator_commands": []}
 
     def _route_from_orchestrator(
         self, state: PlanGraphState
@@ -418,10 +500,33 @@ class LangGraphPlanner:
 
     async def _validate_node(self, state: PlanGraphState) -> dict[str, Any]:
         session = SessionState.model_validate(state["session_json"])
+        commands: list[UnitCommand] = []
+
+        for row in state.get("orchestrator_commands") or []:
+            try:
+                cmd = UnitCommand.model_validate(row)
+            except Exception:
+                continue
+            unit = next((u for u in session.units if u.id == cmd.unit_id), None)
+            if unit is None or unit.unit_type is not UnitType.ORCHESTRATOR:
+                continue
+            if cmd.state_version != session.version:
+                continue
+            if not _action_allowed(unit.unit_type, cmd.action):
+                continue
+            if not _target_in_grid(session, cmd.target):
+                continue
+            if cmd.action is CommandAction.CALL_AIR_SUPPORT and cmd.air_support_payload is None:
+                continue
+            if cmd.drop_start is not None and not _target_in_grid(session, cmd.drop_start):
+                continue
+            if cmd.drop_end is not None and not _target_in_grid(session, cmd.drop_end):
+                continue
+            commands.append(cmd)
+
         raw = [row for row in (state.get("subagent_outputs") or []) if row.get("ok")]
         raw.sort(key=lambda row: int(row.get("priority", 0)), reverse=True)
         seen: set[str] = set()
-        commands: list[UnitCommand] = []
         for row in raw:
             unit_id = str(row.get("unit_id", ""))
             if unit_id in seen:
@@ -443,3 +548,29 @@ class LangGraphPlanner:
             commands.append(cmd)
 
         return {"commands": [c.model_dump(mode="json") for c in commands]}
+
+    def _air_support_request_to_command(
+        self,
+        *,
+        session: SessionState,
+        request: AirSupportRequestPayload,
+    ) -> UnitCommand:
+        """Convert one orchestrator air-support request into a validated command shell."""
+        drop_start = None
+        if request.drop_start_x is not None and request.drop_start_y is not None:
+            drop_start = (request.drop_start_x, request.drop_start_y)
+        drop_end = None
+        if request.drop_end_x is not None and request.drop_end_y is not None:
+            drop_end = (request.drop_end_x, request.drop_end_y)
+        return UnitCommand(
+            session_id=session.id,
+            unit_id="tower",
+            action=CommandAction.CALL_AIR_SUPPORT,
+            target=(request.target_x, request.target_y),
+            rationale=request.rationale,
+            state_version=session.version,
+            air_support_payload=request.payload_type,
+            approach_points=[(point.x, point.y) for point in request.approach_points],
+            drop_start=drop_start,
+            drop_end=drop_end,
+        )

@@ -15,3 +15,8 @@ def configure_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    # Third-party polling/network clients can emit enough INFO traffic to
+    # bog down the live dev server while the simulation is running.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("luffa_bot").setLevel(logging.WARNING)

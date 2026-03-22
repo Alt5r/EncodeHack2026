@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import orjson
 from anthropic import AsyncAnthropic
@@ -14,6 +15,7 @@ from watchtower_backend.services.planning.prompts import build_planner_prompt
 from watchtower_backend.services.planning.schemas import PlannerResponse
 
 logger = logging.getLogger(__name__)
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", flags=re.DOTALL)
 
 
 class HeuristicPlanner:
@@ -172,11 +174,41 @@ def _extract_json_object(raw_text: str) -> str:
     Raises:
         ValueError: If no JSON object can be found.
     """
-    start_index = raw_text.find("{")
-    end_index = raw_text.rfind("}")
-    if start_index == -1 or end_index == -1 or end_index <= start_index:
-        raise ValueError("Planner response did not contain a JSON object.")
-    return raw_text[start_index : end_index + 1]
+    fenced_match = _FENCED_JSON_RE.search(raw_text)
+    if fenced_match is not None:
+        return fenced_match.group(1)
+
+    start_index: int | None = None
+    depth = 0
+    in_string = False
+    escape = False
+
+    for index, char in enumerate(raw_text):
+        if start_index is None:
+            if char == "{":
+                start_index = index
+                depth = 1
+            continue
+
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return raw_text[start_index : index + 1]
+
+    raise ValueError("Planner response did not contain a JSON object.")
 
 
 def _convert_planner_response(

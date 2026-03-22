@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     audio_directory: Path = Field(default=Path("data/audio"))
     default_grid_size: int = Field(default=64, ge=16, le=128)
     default_tick_interval_seconds: float = Field(default=1.0, gt=0.0, le=10.0)
-    default_planner_interval_seconds: float = Field(default=99999.0, gt=0.0, le=99999.0)
+    default_planner_interval_seconds: float = Field(default=5.0, gt=0.0, le=99999.0)
     max_session_event_backlog: int = Field(default=200, ge=10, le=5000)
     planner_model: str = Field(default="claude-3-5-haiku-latest")
     planner_timeout_seconds: float = Field(default=12.0, gt=0.0, le=60.0)

@@ -406,6 +406,11 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
       drawVillage(ctx, village, mapX, mapY, cellW, cellH);
     }
 
+    // ── Unit routes ──
+    for (const unit of state.units) {
+      drawUnitRoute(ctx, unit, mapX, mapY, cellW, cellH);
+    }
+
     // ── Units ──
     for (const unit of state.units) {
       drawUnit(ctx, unit, mapX, mapY, cellW, cellH);
@@ -984,6 +989,46 @@ function drawUnit(
   ctx.textBaseline = 'top';
   ctx.fillText(unit.label, cx, cy + r + 2);
 
+  ctx.restore();
+}
+
+function drawUnitRoute(
+  ctx: CanvasRenderingContext2D,
+  unit: Unit,
+  mapX: number,
+  mapY: number,
+  cellW: number,
+  cellH: number,
+) {
+  if (!unit.target) return;
+  if (unit.target.row === unit.row && unit.target.col === unit.col) return;
+
+  const start = toCanvasPoint({ row: unit.row, col: unit.col }, mapX, mapY, cellW, cellH);
+  const end = toCanvasPoint(unit.target, mapX, mapY, cellW, cellH);
+  const strokeStyle = unit.type === 'helicopter'
+    ? 'rgba(136, 170, 204, 0.72)'
+    : 'rgba(204, 170, 119, 0.76)';
+  const dash = unit.type === 'helicopter' ? [6, 5] : [3, 4];
+  const markerRadius = Math.max(2.5, Math.min(cellW, cellH) * 0.18);
+
+  ctx.save();
+  ctx.setLineDash(dash);
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = unit.type === 'helicopter' ? 1.5 : 1.2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(start.x, start.y);
+  ctx.lineTo(end.x, end.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = strokeStyle;
+  ctx.beginPath();
+  ctx.arc(end.x, end.y, markerRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = GAME_PALETTE.pageBase;
+  ctx.lineWidth = 1;
+  ctx.stroke();
   ctx.restore();
 }
 
