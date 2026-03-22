@@ -98,6 +98,7 @@ export interface ScoreSummary {
 
 /** Full game state from the backend */
 export interface SessionState {
+  id: string;
   grid_size: number;   // always 32
   tick: number;
   status: 'waiting' | 'running' | 'won' | 'lost' | 'ended';

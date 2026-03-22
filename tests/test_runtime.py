@@ -145,6 +145,40 @@ async def test_session_runtime_keeps_ticking_while_planner_is_in_flight(tmp_path
     assert runtime._planner_task is None
 
 
+async def test_session_runtime_gives_ground_crews_opening_orders_while_planner_is_in_flight(tmp_path) -> None:
+    """Ground crews should start moving during the opening phase even if Kiro is still thinking."""
+    planner = _SlowPlanner(delay_seconds=0.2)
+    runtime = SessionRuntime(
+        session_state=build_initial_state(
+            doctrine_text="Protect the village.",
+            doctrine_title="Doctrine",
+            wind=WindState(direction="NE", speed_mph=10.0),
+            grid_size=24,
+        ),
+        planner=planner,
+        radio_sink=_FakeRadioSink(),
+        replay_store=ReplayStore(root_directory=tmp_path / "replays"),
+        tick_interval_seconds=0.01,
+        planner_interval_seconds=99999.0,
+        max_event_backlog=10,
+        seed=123,
+    )
+
+    await runtime.start()
+    await asyncio.sleep(0.05)
+    current = runtime.session_state
+    ground_1 = next(unit for unit in current.units if unit.id == "ground-1")
+    ground_2 = next(unit for unit in current.units if unit.id == "ground-2")
+    heli = next(unit for unit in current.units if unit.id == "heli-alpha")
+    await runtime.stop()
+
+    assert planner.calls == [0]
+    assert ground_1.position != (14, 16) or ground_1.target is not None
+    assert ground_2.position != (16, 14) or ground_2.target is not None
+    assert heli.position == (2, 2)
+    assert heli.target is None
+
+
 async def test_session_runtime_applies_slow_planner_commands_once_ready(tmp_path) -> None:
     """Delayed planner commands should still be applied when they eventually arrive."""
     planner = _SlowCommandPlanner(delay_seconds=0.05)
@@ -165,7 +199,7 @@ async def test_session_runtime_applies_slow_planner_commands_once_ready(tmp_path
     )
 
     await runtime.start()
-    await asyncio.sleep(0.09)
+    await asyncio.sleep(0.14)
     current = runtime.session_state
     heli = next(unit for unit in current.units if unit.id == "heli-alpha")
     await runtime.stop()
@@ -198,7 +232,7 @@ async def test_session_runtime_emits_air_support_radio_updates(tmp_path) -> None
     )
 
     await runtime.start()
-    await asyncio.sleep(0.12)
+    await asyncio.sleep(0.25)
     await runtime.stop()
 
     texts = [message.text for message in radio_sink.messages]

@@ -77,6 +77,7 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
   const hoveredCellRef = useRef<{ row: number; col: number } | null>(null);
   const missionAnimationRef = useRef<Map<string, MissionAnimationState>>(new Map());
   const unitAnimationRef = useRef<Map<string, UnitAnimationState>>(new Map());
+  const animationSessionIdRef = useRef<string | null>(null);
 
   // Zoom & pan state (refs to avoid re-renders)
   const zoomRef = useRef(1);
@@ -615,9 +616,16 @@ export default function MapCanvas({ params, gameState, showGrid, selectedCell, o
 
   useEffect(() => {
     if (!gameState) {
+      animationSessionIdRef.current = null;
       missionAnimationRef.current.clear();
       unitAnimationRef.current.clear();
       return;
+    }
+
+    if (animationSessionIdRef.current !== gameState.id) {
+      animationSessionIdRef.current = gameState.id;
+      missionAnimationRef.current.clear();
+      unitAnimationRef.current.clear();
     }
 
     const now = performance.now();

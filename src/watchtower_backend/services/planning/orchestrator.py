@@ -11,71 +11,16 @@ from anthropic import AsyncAnthropic
 
 from watchtower_backend.domain.commands import UnitCommand
 from watchtower_backend.domain.models.simulation import CommandAction, SessionState, UnitType
+from watchtower_backend.services.planning.safety import (
+    choose_safe_ground_target,
+    fire_edge_context,
+    ground_target_safe,
+)
 from watchtower_backend.services.planning.prompts import build_planner_prompt
 from watchtower_backend.services.planning.schemas import PlannerResponse
 
 logger = logging.getLogger(__name__)
 _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", flags=re.DOTALL)
-_NEIGHBOUR_OFFSETS: tuple[tuple[int, int], ...] = (
-    (1, 0),
-    (-1, 0),
-    (0, 1),
-    (0, -1),
-    (1, 1),
-    (1, -1),
-    (-1, 1),
-    (-1, -1),
-)
-
-
-def _fire_edge_context(session_state: SessionState) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    fire_set = set(session_state.fire_cells)
-    edge_cells: list[tuple[int, int]] = []
-    containment_cells: dict[tuple[int, int], None] = {}
-
-    for row, col in session_state.fire_cells:
-        is_edge = False
-        for delta_row, delta_col in _NEIGHBOUR_OFFSETS:
-            next_row = row + delta_row
-            next_col = col + delta_col
-            if not (0 <= next_row < session_state.grid_size and 0 <= next_col < session_state.grid_size):
-                continue
-            neighbour = (next_row, next_col)
-            if neighbour in fire_set:
-                continue
-            is_edge = True
-            containment_cells[neighbour] = None
-        if is_edge:
-            edge_cells.append((row, col))
-
-    return edge_cells, list(containment_cells.keys())
-
-
-def _preview_firebreak_cells(
-    session_state: SessionState,
-    target: tuple[int, int],
-) -> list[tuple[int, int]]:
-    max_index = session_state.grid_size - 1
-    return [
-        (
-            max(0, min(max_index, target[0] + offset)),
-            max(0, min(max_index, target[1])),
-        )
-        for offset in range(-1, 2)
-    ]
-
-
-def _ground_target_safe(
-    session_state: SessionState,
-    action: CommandAction,
-    target: tuple[int, int],
-) -> bool:
-    fire_cells = set(session_state.fire_cells)
-    if target in fire_cells:
-        return False
-    if action is CommandAction.CREATE_FIREBREAK:
-        return not any(cell in fire_cells for cell in _preview_firebreak_cells(session_state, target))
-    return True
 
 
 class HeuristicPlanner:
@@ -105,19 +50,18 @@ class HeuristicPlanner:
 
         commands: list[UnitCommand] = []
         village_x, village_y = session_state.village.top_left
-        fire_edge_cells, containment_cells = _fire_edge_context(session_state)
+        fire_edge_cells, _ = fire_edge_context(session_state)
         sorted_fire = sorted(
             fire_edge_cells or session_state.fire_cells,
             key=lambda cell: abs(cell[0] - village_x) + abs(cell[1] - village_y),
         )
         priority_fire = sorted_fire[0]
         safe_ground_target = (
-            min(
-                containment_cells,
-                key=lambda cell: abs(cell[0] - priority_fire[0]) + abs(cell[1] - priority_fire[1]),
+            choose_safe_ground_target(
+                session_state,
+                preferred_target=priority_fire,
             )
-            if containment_cells
-            else (village_x - 2, village_y)
+            or (village_x - 2, village_y)
         )
 
         for unit in session_state.units:
@@ -306,12 +250,18 @@ def _convert_planner_response(
         if unit is None or not unit.is_active:
             continue
         target = (planner_command.target_x, planner_command.target_y)
-        if unit.unit_type is UnitType.GROUND_CREW and not _ground_target_safe(
+        if unit.unit_type is UnitType.GROUND_CREW and not ground_target_safe(
             session_state,
             planner_command.action,
             target,
         ):
-            continue
+            safe_target = choose_safe_ground_target(
+                session_state,
+                preferred_target=target,
+            )
+            if safe_target is None:
+                continue
+            target = safe_target
         commands.append(
             UnitCommand(
                 session_id=session_state.id,

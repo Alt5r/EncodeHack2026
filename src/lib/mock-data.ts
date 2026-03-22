@@ -53,6 +53,7 @@ const firebreakCells: Cell[] = [
 ];
 
 export const MOCK_STATE: SessionState = {
+  id: 'mock-session',
   grid_size: 64,
   tick: 12,
   status: 'running',

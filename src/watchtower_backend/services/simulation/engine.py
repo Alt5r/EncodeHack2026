@@ -30,6 +30,7 @@ from watchtower_backend.services.simulation.air_support import (
     build_fallback_air_support_mission,
     get_mission_progress_per_tick,
 )
+from watchtower_backend.services.planning.safety import safe_ground_candidates
 
 # --- Wind direction unit vectors ---
 _WIND_VECTORS: dict[str, tuple[float, float]] = {
@@ -856,8 +857,7 @@ class SimulationEngine:
 
             if unit.unit_type is UnitType.GROUND_CREW:
                 if not self._is_ground_cell_passable(unit.target, fire_cells):
-                    unit.target = None
-                    unit.status_text = "holding"
+                    mutations.extend(self._retarget_ground_unit(unit, preferred_target=unit.target))
                     continue
                 next_position = self._move_ground_towards(
                     origin=unit.position,
@@ -868,8 +868,7 @@ class SimulationEngine:
                     origin=unit.position,
                     target=unit.target,
                 ):
-                    unit.target = None
-                    unit.status_text = "holding"
+                    mutations.extend(self._retarget_ground_unit(unit, preferred_target=unit.target))
                     continue
             else:
                 next_position = self._move_towards(
@@ -924,9 +923,7 @@ class SimulationEngine:
             target = unit.target
             preview_cells = self._preview_firebreak(center=target)
             if any(cell in self._session_state.fire_cells for cell in preview_cells):
-                unit.status_text = "holding"
-                unit.target = None
-                return []
+                return self._retarget_ground_unit(unit, preferred_target=target)
             cells = self._create_firebreak(center=target)
             unit.status_text = "ready"
             unit.target = None
@@ -940,6 +937,66 @@ class SimulationEngine:
             ]
 
         return []
+
+    def _retarget_ground_unit(
+        self,
+        unit: UnitState,
+        *,
+        preferred_target: Coordinate,
+    ) -> list[dict[str, object]]:
+        """Retask one ground crew to the next safe reachable line instead of freezing."""
+        replacement_target = self._choose_safe_reachable_ground_target(
+            origin=unit.position,
+            preferred_target=preferred_target,
+        )
+        if replacement_target is None:
+            unit.target = None
+            unit.status_text = "holding"
+            return [{"kind": "unit_holding", "unit_id": unit.id, "position": unit.position}]
+
+        if replacement_target == unit.position and unit.status_text == "laying firebreak":
+            cells = self._create_firebreak(center=replacement_target)
+            unit.target = None
+            unit.status_text = "ready"
+            return [
+                {
+                    "kind": "firebreak_created",
+                    "unit_id": unit.id,
+                    "target": replacement_target,
+                    "cells": cells,
+                }
+            ]
+
+        unit.target = replacement_target
+        if unit.status_text not in {"laying firebreak", "moving"}:
+            unit.status_text = "laying firebreak"
+        return [
+            {
+                "kind": "unit_retasked",
+                "unit_id": unit.id,
+                "position": unit.position,
+                "target": replacement_target,
+                "status_text": unit.status_text,
+            }
+        ]
+
+    def _choose_safe_reachable_ground_target(
+        self,
+        *,
+        origin: Coordinate,
+        preferred_target: Coordinate,
+    ) -> Coordinate | None:
+        """Pick the nearest safe reachable fallback target for one ground crew."""
+        for candidate in safe_ground_candidates(
+            self._session_state,
+            preferred_target=preferred_target,
+            limit=48,
+        ):
+            if candidate == origin:
+                return candidate
+            if self._ground_target_reachable(origin=origin, target=candidate):
+                return candidate
+        return None
 
     def _get_unit(self, unit_id: str) -> UnitState:
         """Return the matching unit state.

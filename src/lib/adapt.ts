@@ -112,6 +112,7 @@ export function adaptSessionState(raw: RawSessionState): SessionState {
   ];
 
   return {
+    id: raw.id,
     grid_size: raw.grid_size,
     tick: raw.tick,
     status,

@@ -154,6 +154,44 @@ def test_firebreak_waits_until_ground_crew_reaches_target() -> None:
     assert ground.status_text == "laying firebreak"
 
 
+def test_ground_crews_can_act_before_tick_ten_while_helicopters_cannot_end_the_incident() -> None:
+    """Opening-phase protection should not delay ground crews, only the incident ending."""
+    engine = _make_engine(fire_cells=[(12, 12)], seed=18)
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    ground.position = (10, 10)
+    ground.target = None
+    heli = next(unit for unit in engine.session_state.units if unit.id == "heli-alpha")
+    heli.position = (12, 12)
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="ground-1",
+                action=CommandAction.CREATE_FIREBREAK,
+                target=(10, 10),
+                rationale="Cut the line immediately.",
+                state_version=1,
+            ),
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="heli-alpha",
+                action=CommandAction.DROP_WATER,
+                target=(12, 12),
+                rationale="Suppress the opening fire without ending the game outright.",
+                state_version=1,
+            ),
+        ]
+    )
+
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert ground.status_text == "ready"
+    assert (10, 10) in engine.session_state.firebreak_cells
+    assert engine.session_state.tick == 1
+    assert engine.session_state.status.value == "running"
+    assert engine.session_state.fire_cells
+
+
 def test_ground_crews_keep_advancing_between_commands() -> None:
     """Ground crews should keep moving toward their assigned target every tick."""
     engine = _make_engine(seed=11)
@@ -248,6 +286,24 @@ def test_ground_crews_cannot_cut_firebreaks_through_active_fire() -> None:
 
     assert any(mutation["kind"] == "command_rejected" for mutation in mutations)
     assert (10, 10) not in engine.session_state.firebreak_cells
+
+
+def test_ground_crews_retarget_instead_of_freezing_when_their_line_becomes_unsafe() -> None:
+    """A live crew should pick a new safe line rather than falling into holding."""
+    engine = _make_engine(fire_cells=[(12, 12)], seed=33)
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    ground.position = (16, 16)
+    ground.target = (12, 12)
+    ground.status_text = "laying firebreak"
+
+    mutations = engine.step(commands=[])
+
+    ground = next(unit for unit in engine.session_state.units if unit.id == "ground-1")
+    assert any(mutation["kind"] == "unit_retasked" for mutation in mutations)
+    assert ground.target is not None
+    assert ground.target != (12, 12)
+    assert ground.status_text == "laying firebreak"
+    assert ground.is_active
 
 
 def test_ground_crews_route_around_fire_instead_of_cutting_through_it() -> None:
@@ -812,10 +868,34 @@ def test_call_air_support_biases_requested_geometry_to_fire_edge() -> None:
 
 def test_air_support_exit_phase_is_slower_than_the_drop_run() -> None:
     """Post-drop exit should stay visibly slower than the bombing run itself."""
-    assert get_mission_progress_per_tick(AirSupportPhase.EXIT) == 0.2
+    assert get_mission_progress_per_tick(AirSupportPhase.EXIT) == 0.16
     assert get_mission_progress_per_tick(AirSupportPhase.EXIT) < get_mission_progress_per_tick(
         AirSupportPhase.DROP
     )
+
+
+def test_air_support_exit_leg_is_shorter_than_the_old_far_flyoff() -> None:
+    """Aircraft should leave the map cleanly without using the old huge exit leg."""
+    engine = _make_engine(fire_cells=[(10, 10), (11, 11)], seed=16, grid_size=64)
+
+    engine.step(
+        commands=[
+            UnitCommand(
+                session_id=engine.session_state.id,
+                unit_id="tower",
+                action=CommandAction.CALL_AIR_SUPPORT,
+                target=(11, 11),
+                rationale="Dispatch one retardant run.",
+                state_version=1,
+                air_support_payload=AirSupportPayload.RETARDANT,
+            )
+        ]
+    )
+
+    mission = engine.session_state.air_support_missions[0]
+    assert len(mission.exit_points) == 1
+    exit_point = mission.exit_points[0]
+    assert max(abs(exit_point[0] - mission.drop_end[0]), abs(exit_point[1] - mission.drop_end[1])) == 10
 
 
 def test_air_support_drop_creates_treated_cells() -> None:

@@ -4,17 +4,7 @@ from __future__ import annotations
 
 from watchtower_backend.domain.commands import Mission
 from watchtower_backend.domain.models.simulation import SessionState, UnitType
-
-_NEIGHBOUR_OFFSETS: tuple[tuple[int, int], ...] = (
-    (1, 0),
-    (-1, 0),
-    (0, 1),
-    (0, -1),
-    (1, 1),
-    (1, -1),
-    (-1, 1),
-    (-1, -1),
-)
+from watchtower_backend.services.planning.safety import fire_edge_context, safe_ground_candidates
 
 
 def _active_units_summary(session_state: SessionState) -> list[dict[str, object]]:
@@ -33,29 +23,6 @@ def _active_units_summary(session_state: SessionState) -> list[dict[str, object]
     ]
 
 
-def _fire_edge_context(session_state: SessionState) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    fire_set = set(session_state.fire_cells)
-    edge_cells: list[tuple[int, int]] = []
-    containment_cells: dict[tuple[int, int], None] = {}
-
-    for row, col in session_state.fire_cells:
-        is_edge = False
-        for delta_row, delta_col in _NEIGHBOUR_OFFSETS:
-            next_row = row + delta_row
-            next_col = col + delta_col
-            if not (0 <= next_row < session_state.grid_size and 0 <= next_col < session_state.grid_size):
-                continue
-            neighbour = (next_row, next_col)
-            if neighbour in fire_set:
-                continue
-            is_edge = True
-            containment_cells[neighbour] = None
-        if is_edge:
-            edge_cells.append((row, col))
-
-    return edge_cells, list(containment_cells.keys())
-
-
 def build_planner_prompt(session_state: SessionState) -> str:
     """Build the single-call planner prompt from current session state.
 
@@ -66,7 +33,8 @@ def build_planner_prompt(session_state: SessionState) -> str:
         Prompt text instructing the model to emit JSON commands.
     """
     active_units = _active_units_summary(session_state=session_state)
-    fire_edge_cells, containment_cells = _fire_edge_context(session_state)
+    fire_edge_cells, containment_cells = fire_edge_context(session_state)
+    safe_ground_cells = safe_ground_candidates(session_state, limit=24)
     summary = {
         "session_id": session_state.id,
         "tick": session_state.tick,
@@ -78,6 +46,7 @@ def build_planner_prompt(session_state: SessionState) -> str:
         "fire_cells": session_state.fire_cells[:24],
         "fire_edge_cells": fire_edge_cells[:24],
         "containment_cells": containment_cells[:24],
+        "safe_ground_cells": safe_ground_cells,
         "firebreak_cells": session_state.firebreak_cells[:24],
         "units": active_units,
     }
@@ -110,7 +79,8 @@ def build_orchestrator_prompt(session_state: SessionState) -> str:
         User message text for the orchestrator model.
     """
     active_units = _active_units_summary(session_state=session_state)
-    fire_edge_cells, containment_cells = _fire_edge_context(session_state)
+    fire_edge_cells, containment_cells = fire_edge_context(session_state)
+    safe_ground_cells = safe_ground_candidates(session_state, limit=24)
     summary = {
         "session_id": session_state.id,
         "tick": session_state.tick,
@@ -123,6 +93,7 @@ def build_orchestrator_prompt(session_state: SessionState) -> str:
         "fire_cells": session_state.fire_cells[:48],
         "fire_edge_cells": fire_edge_cells[:24],
         "containment_cells": containment_cells[:24],
+        "safe_ground_cells": safe_ground_cells,
         "firebreak_cells": session_state.firebreak_cells[:24],
         "air_support_missions": [
             {
@@ -158,6 +129,7 @@ def build_orchestrator_prompt(session_state: SessionState) -> str:
         "- Use air support when a straight retardant or water line will materially help contain the fire.\n"
         "- Air-support drop lines should sit on the fire edge or one cell ahead of the active front; do not center runs through the already-burning core unless there is no viable containment edge.\n"
         "- Prefer containment_cells for retardant lines and fire_edge_cells for the threatened flank.\n"
+        "- Prefer safe_ground_cells for ground-crew standoff line work; ground units may act immediately from tick 0.\n"
         "- payload_type: water | retardant.\n"
         "- drop_start/drop_end are optional; omit them to let the simulation derive the run automatically.\n"
         "- approach_points may be omitted or may include off-map entry points.\n"
@@ -180,7 +152,12 @@ def build_subagent_prompt(session_state: SessionState, mission: Mission) -> str:
         User message text for the sub-agent model.
     """
     unit = next((u for u in session_state.units if u.id == mission.agent_id), None)
-    fire_edge_cells, containment_cells = _fire_edge_context(session_state)
+    fire_edge_cells, containment_cells = fire_edge_context(session_state)
+    safe_ground_cells = safe_ground_candidates(
+        session_state,
+        preferred_target=mission.target,
+        limit=24,
+    )
     unit_blob: dict[str, object] | None = None
     if unit is not None:
         unit_blob = {
@@ -211,6 +188,7 @@ def build_subagent_prompt(session_state: SessionState, mission: Mission) -> str:
         "nearby_fire_cells": nearby_fire[:24],
         "fire_edge_cells": fire_edge_cells[:24],
         "safe_containment_cells": containment_cells[:24],
+        "safe_ground_cells": safe_ground_cells,
         "grid_size": session_state.grid_size,
         "village": session_state.village.model_dump(mode="json"),
         "wind": session_state.wind.model_dump(mode="json"),
@@ -226,9 +204,10 @@ def build_subagent_prompt(session_state: SessionState, mission: Mission) -> str:
         "- If helicopter water_remaining is 0, do not choose drop_water.\n"
         "- Helicopter drops should hit fire_edge_cells or cells immediately ahead of the active front, not the already-burning core unless no edge is available.\n"
         "- Ground crews: actions move | create_firebreak | hold_position only.\n"
+        "- Ground crews may act immediately from tick 0.\n"
         "- Ground crews must never target a burning cell.\n"
         "- Ground crews must preserve themselves first: avoid routes through flame fronts, avoid getting pinned against water, and never assume they can cross water.\n"
-        "- Ground-crew firebreaks should use safe_containment_cells just outside the fire edge, not inside the active fire.\n"
+        "- Ground-crew firebreaks should use safe_ground_cells and safe_containment_cells just outside the fire edge, not inside the active fire.\n"
         "- Targets must be within 0..grid_size-1.\n"
         "- radio_message: one short sentence, plain language, no JSON inside.\n"
         "- Return JSON only, no markdown.\n\n"

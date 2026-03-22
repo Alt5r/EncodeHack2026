@@ -36,6 +36,10 @@ from watchtower_backend.services.planning.prompts import (
     build_orchestrator_prompt,
     build_subagent_prompt,
 )
+from watchtower_backend.services.planning.safety import (
+    choose_safe_ground_target,
+    ground_target_safe,
+)
 from watchtower_backend.services.planning.schemas import (
     AirSupportRequestPayload,
     OrchestratorMissionsResponse,
@@ -91,6 +95,7 @@ class PlanGraphState(TypedDict, total=False):
     missions: list[dict[str, Any]]
     orchestrator_commands: list[dict[str, Any]]
     subagent_outputs: Annotated[list[dict[str, Any]], operator.add]
+    accepted_subagent_outputs: list[dict[str, Any]]
     commands: list[dict[str, Any]]
 
 
@@ -117,36 +122,6 @@ def _action_allowed(unit_type: UnitType, action: CommandAction) -> bool:
 def _target_in_grid(session: SessionState, target: tuple[int, int]) -> bool:
     x, y = target
     return 0 <= x < session.grid_size and 0 <= y < session.grid_size
-
-
-def _preview_firebreak_cells(
-    session: SessionState,
-    target: tuple[int, int],
-) -> list[tuple[int, int]]:
-    max_index = session.grid_size - 1
-    cells: list[tuple[int, int]] = []
-    for offset in range(-1, 2):
-        cell = (
-            max(0, min(max_index, target[0] + offset)),
-            max(0, min(max_index, target[1])),
-        )
-        if cell not in cells:
-            cells.append(cell)
-    return cells
-
-
-def _ground_target_safe(
-    session: SessionState,
-    action: CommandAction,
-    target: tuple[int, int],
-) -> bool:
-    fire_cells = set(session.fire_cells)
-    if target in fire_cells:
-        return False
-    if action is CommandAction.CREATE_FIREBREAK:
-        return not any(cell in fire_cells for cell in _preview_firebreak_cells(session, target))
-    return True
-
 
 class LangGraphPlanner:
     """Hierarchical planner: Sonnet orchestrator + Haiku sub-agents (LangGraph Send).
@@ -282,6 +257,7 @@ class LangGraphPlanner:
             "missions": [],
             "orchestrator_commands": [],
             "subagent_outputs": [],
+            "accepted_subagent_outputs": [],
             "commands": [],
         }
         try:
@@ -303,7 +279,7 @@ class LangGraphPlanner:
         commands = [UnitCommand.model_validate(row) for row in raw_commands]
         await self._publish_subagent_radios(
             session_state=session_state,
-            outputs=result.get("subagent_outputs") or [],
+            outputs=result.get("accepted_subagent_outputs") or [],
         )
         return commands
 
@@ -318,8 +294,6 @@ class LangGraphPlanner:
         from watchtower_backend.domain.events import RadioMessage
 
         for row in outputs:
-            if not row.get("ok"):
-                continue
             unit_id = str(row.get("unit_id", ""))
             text = str(row.get("radio_message", "")).strip()
             if not text:
@@ -499,17 +473,25 @@ class LangGraphPlanner:
             return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
 
         target = (payload.target_x, payload.target_y)
+        radio_message = payload.radio_message
         if not _target_in_grid(session, target):
             return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
 
         if not _action_allowed(unit.unit_type, payload.action):
             return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
-        if unit.unit_type is UnitType.GROUND_CREW and not _ground_target_safe(
+        if unit.unit_type is UnitType.GROUND_CREW and not ground_target_safe(
             session,
             payload.action,
             target,
         ):
-            return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
+            safe_target = choose_safe_ground_target(
+                session,
+                preferred_target=target,
+            )
+            if safe_target is None:
+                return {"subagent_outputs": [{"ok": False, "unit_id": mission.agent_id}]}
+            target = safe_target
+            radio_message = ""
 
         command = UnitCommand(
             session_id=session.id,
@@ -525,7 +507,7 @@ class LangGraphPlanner:
                     "ok": True,
                     "unit_id": payload.unit_id,
                     "priority": priority,
-                    "radio_message": payload.radio_message,
+                    "radio_message": radio_message,
                     "command": command.model_dump(mode="json"),
                 }
             ]
@@ -538,6 +520,7 @@ class LangGraphPlanner:
     async def _validate_node(self, state: PlanGraphState) -> dict[str, Any]:
         session = SessionState.model_validate(state["session_json"])
         commands: list[UnitCommand] = []
+        accepted_subagent_outputs: list[dict[str, Any]] = []
 
         for row in state.get("orchestrator_commands") or []:
             try:
@@ -582,15 +565,55 @@ class LangGraphPlanner:
                 continue
             if not _target_in_grid(session, cmd.target):
                 continue
-            if unit.unit_type is UnitType.GROUND_CREW and not _ground_target_safe(
+            if unit.unit_type is UnitType.GROUND_CREW and not ground_target_safe(
                 session,
                 cmd.action,
                 cmd.target,
             ):
+                safe_target = choose_safe_ground_target(
+                    session,
+                    preferred_target=cmd.target,
+                )
+                if safe_target is None:
+                    continue
+                cmd = cmd.model_copy(update={"target": safe_target})
+                commands.append(cmd)
                 continue
             commands.append(cmd)
+            accepted_subagent_outputs.append(
+                {
+                    "unit_id": unit_id,
+                    "radio_message": str(row.get("radio_message", "")),
+                }
+            )
 
-        return {"commands": [c.model_dump(mode="json") for c in commands]}
+        fallback_commands = await self._fallback_planner.plan(session_state=session)
+        commanded_ids = {command.unit_id for command in commands}
+        for cmd in fallback_commands:
+            if cmd.unit_id in commanded_ids:
+                continue
+            unit = next((u for u in session.units if u.id == cmd.unit_id), None)
+            if unit is None or unit.unit_type is UnitType.ORCHESTRATOR or not unit.is_active:
+                continue
+            if unit.unit_type is UnitType.GROUND_CREW and not ground_target_safe(
+                session,
+                cmd.action,
+                cmd.target,
+            ):
+                safe_target = choose_safe_ground_target(
+                    session,
+                    preferred_target=cmd.target,
+                )
+                if safe_target is None:
+                    continue
+                cmd = cmd.model_copy(update={"target": safe_target})
+            commands.append(cmd)
+            commanded_ids.add(cmd.unit_id)
+
+        return {
+            "commands": [c.model_dump(mode="json") for c in commands],
+            "accepted_subagent_outputs": accepted_subagent_outputs,
+        }
 
     def _air_support_request_to_command(
         self,

@@ -32,6 +32,8 @@ export interface BroadcastEnvelope {
   kind?: 'event' | 'snapshot';
   event?: {
     type: string;
+    session_id?: string;
+    tick?: number;
     payload: unknown;
   };
   snapshot?: Record<string, unknown>;

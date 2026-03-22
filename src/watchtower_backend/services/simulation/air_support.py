@@ -67,7 +67,7 @@ PAYLOAD_SETTINGS: dict[AirSupportPayload, PayloadSettings] = {
 MISSION_PROGRESS_PER_TICK: dict[AirSupportPhase, float] = {
     AirSupportPhase.APPROACH: 0.5,
     AirSupportPhase.DROP: 0.5,
-    AirSupportPhase.EXIT: 0.2,
+    AirSupportPhase.EXIT: 0.16,
     AirSupportPhase.COMPLETE: 0.0,
 }
 
@@ -164,6 +164,11 @@ def step_direction(start: Coordinate, end: Coordinate) -> Coordinate:
 def off_map_distance(grid_size: int, multiplier: int = 1) -> int:
     """How far outside the map entry and exit legs should start."""
     return grid_size * multiplier + 8
+
+
+def exit_departure_distance(grid_size: int) -> int:
+    """How far beyond the map the aircraft should travel before despawning."""
+    return max(10, grid_size // 6)
 
 
 def manhattan_distance(a: Coordinate, b: Coordinate) -> int:
@@ -475,8 +480,7 @@ def build_fallback_air_support_mission(
     entry = extend_point(drop_start, entry_direction, off_map_distance(grid_size))
     mid = extend_point(drop_start, entry_direction, max(4, grid_size // 10))
     run_direction = step_direction(drop_start, drop_end)
-    exit_near = extend_point(drop_end, run_direction, off_map_distance(grid_size))
-    exit_far = extend_point(drop_end, run_direction, off_map_distance(grid_size, 2))
+    exit_near = extend_point(drop_end, run_direction, exit_departure_distance(grid_size))
 
     approach = list(approach_points or [])
     if not approach:
@@ -491,7 +495,7 @@ def build_fallback_air_support_mission(
         approach_points=approach,
         drop_start=drop_start,
         drop_end=drop_end,
-        exit_points=[exit_near, exit_far],
+        exit_points=[exit_near],
         phase=AirSupportPhase.APPROACH,
         progress=0.0,
     )

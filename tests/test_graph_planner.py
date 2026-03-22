@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from watchtower_backend.domain.models.simulation import WindState
+from watchtower_backend.domain.models.simulation import CommandAction, WindState
 from watchtower_backend.services.planning.graph_planner import LangGraphPlanner
 from watchtower_backend.services.planning.orchestrator import HeuristicPlanner
+from watchtower_backend.services.planning.safety import ground_target_safe
 from watchtower_backend.services.sessions.runtime import build_initial_state
 
 
@@ -35,6 +36,15 @@ class _FakeMessagesClient:
 class _FakeAnthropicClient:
     def __init__(self, responses: list[str]) -> None:
         self.messages = _FakeMessagesClient(responses)
+
+
+class _FakeRadioSink:
+    def __init__(self) -> None:
+        self.messages = []
+
+    async def publish(self, session_state, message):  # type: ignore[no-untyped-def]
+        _ = session_state
+        self.messages.append(message)
 
 
 async def test_langgraph_planner_runs_graph_and_returns_command() -> None:
@@ -67,9 +77,8 @@ async def test_langgraph_planner_runs_graph_and_returns_command() -> None:
 
     commands = await planner.plan(session_state=state)
 
-    assert len(commands) == 1
-    assert commands[0].unit_id == "heli-alpha"
-    assert commands[0].target == (4, 12)
+    heli_command = next(command for command in commands if command.unit_id == "heli-alpha")
+    assert heli_command.target == (4, 12)
 
 
 async def test_langgraph_planner_falls_back_without_client() -> None:
@@ -128,9 +137,8 @@ async def test_langgraph_planner_uses_kiro_path_when_enabled(monkeypatch) -> Non
 
     commands = await planner.plan(session_state=state)
 
-    assert len(commands) == 1
-    assert commands[0].unit_id == "heli-alpha"
-    assert commands[0].target == (4, 12)
+    heli_command = next(command for command in commands if command.unit_id == "heli-alpha")
+    assert heli_command.target == (4, 12)
 
 
 async def test_langgraph_planner_accepts_orchestrator_air_support_requests(monkeypatch) -> None:
@@ -170,7 +178,6 @@ async def test_langgraph_planner_accepts_orchestrator_air_support_requests(monke
 
     commands = await planner.plan(session_state=state)
 
-    assert len(commands) == 2
     assert any(command.unit_id == "tower" and command.action.value == "call_air_support" for command in commands)
     assert any(command.unit_id == "heli-alpha" and command.action.value == "drop_water" for command in commands)
 
@@ -216,14 +223,13 @@ async def test_langgraph_planner_parses_kiro_wrapped_json(monkeypatch) -> None:
 
     commands = await planner.plan(session_state=state)
 
-    assert len(commands) == 1
-    assert commands[0].unit_id == "heli-alpha"
-    assert commands[0].action.value == "drop_water"
-    assert commands[0].target == (4, 12)
+    heli_command = next(command for command in commands if command.unit_id == "heli-alpha")
+    assert heli_command.action.value == "drop_water"
+    assert heli_command.target == (4, 12)
 
 
 async def test_langgraph_planner_filters_ground_commands_into_active_fire(monkeypatch) -> None:
-    """Unsafe ground-crew targets on burning cells should be rejected before execution."""
+    """Unsafe ground-crew targets should be rewritten to safe live commands."""
     state = build_initial_state(
         doctrine_text="Protect the village.",
         doctrine_title="Doctrine",
@@ -258,10 +264,10 @@ async def test_langgraph_planner_filters_ground_commands_into_active_fire(monkey
 
     commands = await planner.plan(session_state=state)
 
-    assert all(
-        not (command.unit_id == "ground-1" and command.target in state.fire_cells)
-        for command in commands
-    )
+    ground_command = next(command for command in commands if command.unit_id == "ground-1")
+    assert ground_command.action in {CommandAction.MOVE, CommandAction.CREATE_FIREBREAK}
+    assert ground_command.target not in state.fire_cells
+    assert ground_target_safe(state, ground_command.action, ground_command.target)
 
 
 async def test_langgraph_planner_ignores_inactive_units(monkeypatch) -> None:
@@ -306,3 +312,84 @@ async def test_langgraph_planner_ignores_inactive_units(monkeypatch) -> None:
     commands = await planner.plan(session_state=state)
 
     assert all(command.unit_id != "ground-1" for command in commands)
+
+
+async def test_langgraph_planner_backfills_missing_ground_units_from_fallback(monkeypatch) -> None:
+    """If Kiro omits ground missions, the live planner should still command both crews."""
+    state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    planner = LangGraphPlanner(
+        orchestrator_model="unused",
+        subagent_model="unused",
+        timeout_seconds=5.0,
+        max_tokens=100,
+        graph_invoke_timeout_seconds=60.0,
+        fallback_planner=HeuristicPlanner(),
+        anthropic_client=None,
+        radio_sink=None,
+        use_kiro=True,
+    )
+
+    async def fake_call(agent_name: str, _: str) -> str:
+        if agent_name == "watchtower-orchestrator":
+            return (
+                '{"missions":[{"agent_id":"heli-alpha","intent":"suppress","target_x":4,"target_y":12,'
+                '"priority":10,"reason":"lead edge"}],"air_support_requests":[]}'
+            )
+        return (
+            '{"unit_id":"heli-alpha","action":"drop_water","target_x":4,"target_y":12,'
+            '"rationale":"Suppressing.","radio_message":"Dropping on the fire now."}'
+        )
+
+    monkeypatch.setattr(planner, "_call_kiro", fake_call)
+
+    commands = await planner.plan(session_state=state)
+
+    commanded_ids = {command.unit_id for command in commands}
+    assert "ground-1" in commanded_ids
+    assert "ground-2" in commanded_ids
+
+
+async def test_langgraph_planner_only_publishes_radio_for_accepted_subagent_commands(monkeypatch) -> None:
+    """Rejected or rewritten ground commands should not still speak as if they executed."""
+    state = build_initial_state(
+        doctrine_text="Protect the village.",
+        doctrine_title="Doctrine",
+        wind=WindState(direction="NE", speed_mph=10.0),
+        grid_size=24,
+    )
+    state.fire_cells = [(14, 14)]
+    radio_sink = _FakeRadioSink()
+    planner = LangGraphPlanner(
+        orchestrator_model="unused",
+        subagent_model="unused",
+        timeout_seconds=5.0,
+        max_tokens=100,
+        graph_invoke_timeout_seconds=60.0,
+        fallback_planner=HeuristicPlanner(),
+        anthropic_client=None,
+        radio_sink=radio_sink,
+        use_kiro=True,
+    )
+
+    async def fake_call(agent_name: str, _: str) -> str:
+        if agent_name == "watchtower-orchestrator":
+            return (
+                '{"missions":[{"agent_id":"ground-1","intent":"firebreak","target_x":14,"target_y":14,'
+                '"priority":10,"reason":"stop the head fire"}],"air_support_requests":[]}'
+            )
+        return (
+            '{"unit_id":"ground-1","action":"create_firebreak","target_x":14,"target_y":14,'
+            '"rationale":"Dig through the active fire.","radio_message":"Pushing into the flames."}'
+        )
+
+    monkeypatch.setattr(planner, "_call_kiro", fake_call)
+
+    commands = await planner.plan(session_state=state)
+
+    assert any(command.unit_id == "ground-1" for command in commands)
+    assert not radio_sink.messages

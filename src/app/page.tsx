@@ -35,6 +35,28 @@ type Screen =
 const DEFAULT_DOCTRINE =
   'Prioritize village protection. Use helicopters for direct water suppression on the nearest fire cells. Deploy ground crews to build firebreaks between the fire front and the village. Fall back to defensive positions if the fire breaches the first line.';
 
+function buildPendingLiveState(sessionId: string): SessionState {
+  return {
+    id: sessionId,
+    grid_size: MOCK_STATE.grid_size,
+    tick: 0,
+    status: 'waiting',
+    cells: [],
+    units: [],
+    villages: MOCK_STATE.villages,
+    wind: MOCK_STATE.wind,
+    score: {
+      time_elapsed_seconds: 0,
+      burned_cells: 0,
+      suppressed_cells: 0,
+      firebreak_cells: 0,
+      village_damage: 0,
+    },
+    airSupportMissions: [],
+    treatedCells: [],
+  };
+}
+
 // ── Component ────────────────────────────────────────────────
 
 export default function Home() {
@@ -55,6 +77,8 @@ export default function Home() {
   const [villageDamage, setVillageDamage] = useState(0);
   const loggedAirSupportMissionIdsRef = useRef<Set<string>>(new Set());
   const lastLiveConnectionRef = useRef(false);
+  const startRequestSeqRef = useRef(0);
+  const isStartingSessionRef = useRef(false);
 
   // voice_key lookup — radio.audio_ready doesn't include voice_key,
   // so we stash it when radio.message arrives
@@ -134,12 +158,22 @@ export default function Home() {
 
   const startGame = useCallback(
     async (doctrine: string) => {
+      if (isStartingSessionRef.current) {
+        return;
+      }
+      isStartingSessionRef.current = true;
+      const requestSeq = startRequestSeqRef.current + 1;
+      startRequestSeqRef.current = requestSeq;
       stopAudio();
       initAudio();
       const nextTerrainParams = { ...DEFAULT_PARAMS, seed: Date.now() };
       setTerrainParams(nextTerrainParams);
       const sessionId = await createSession(doctrine, nextTerrainParams);
-      setGameState(MOCK_STATE);
+      if (startRequestSeqRef.current !== requestSeq) {
+        isStartingSessionRef.current = false;
+        return;
+      }
+      setGameState(sessionId === 'mock-session' ? MOCK_STATE : buildPendingLiveState(sessionId));
       setRadioMessages([]);
       voiceKeyMap.current.clear();
       ignoreRadioForSessionIdRef.current = null;
@@ -161,6 +195,7 @@ export default function Home() {
         );
       }
       setScreen({ kind: 'game', sessionId });
+      isStartingSessionRef.current = false;
     },
     [createSession, initAudio, stopAudio],
   );
@@ -174,9 +209,16 @@ export default function Home() {
   const { isConnected: isLiveSessionConnected, error: liveSessionError } = useSessionWebSocket(activeSessionId, {
     onMessage: useCallback(
       (envelope: BroadcastEnvelope) => {
+        if (activeSessionId && envelope.event?.session_id && envelope.event.session_id !== activeSessionId) {
+          return;
+        }
+
         // Handle snapshot envelopes (full state dumps)
         if (envelope.kind === 'snapshot' && envelope.snapshot) {
           const snap = envelope.snapshot as unknown as SessionState;
+          if (activeSessionId && snap.id !== activeSessionId) {
+            return;
+          }
           setGameState(snap);
           setScoreTick(snap.tick);
           setBurnedCells(snap.cells.filter((cell) => cell.state === 'burned').length);

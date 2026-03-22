@@ -41,7 +41,7 @@ export const PAYLOAD_SETTINGS: Record<AirSupportPayload, {
 const MISSION_PROGRESS_PER_SECOND: Record<AirSupportPhase, number> = {
   approach: 0.5,
   drop: 0.5,
-  exit: 0.2,
+  exit: 0.16,
   complete: 0,
 };
 
@@ -65,6 +65,10 @@ const NEIGHBOUR_OFFSETS: GridCoordinate[] = [
 
 function offMapDistance(gridSize: number, multiplier: number = 1): number {
   return gridSize * multiplier + 8;
+}
+
+function exitDepartureDistance(gridSize: number): number {
+  return Math.max(10, Math.floor(gridSize / 6));
 }
 
 function manhattanDistance(a: GridCoordinate, b: GridCoordinate): number {
@@ -172,9 +176,25 @@ function getRouteSegmentState(points: GridCoordinate[], progress: number): {
     };
   }
 
-  const scaled = progress * (points.length - 1);
-  const index = Math.min(points.length - 2, Math.floor(scaled));
-  const localProgress = scaled - index;
+  const segmentLengths = points.slice(0, -1).map((point, index) =>
+    Math.hypot(
+      points[index + 1].row - point.row,
+      points[index + 1].col - point.col,
+    ) || 1,
+  );
+  const totalLength = segmentLengths.reduce((sum, length) => sum + length, 0) || 1;
+  let remaining = Math.max(0, Math.min(1, progress)) * totalLength;
+  let index = 0;
+
+  while (index < segmentLengths.length - 1 && remaining > segmentLengths[index]) {
+    remaining -= segmentLengths[index];
+    index += 1;
+  }
+
+  const localProgress = Math.max(
+    0,
+    Math.min(1, remaining / (segmentLengths[index] || 1)),
+  );
   return {
     position: interpolatePoint(points[index], points[index + 1], localProgress),
     heading: {
@@ -514,8 +534,7 @@ export function buildFallbackAirSupportMission(
     Math.max(4, Math.floor(state.grid_size / 10)),
   );
   const runDirection = stepDirection(dropStart, dropEnd);
-  const exitNear = extendPoint(dropEnd, runDirection, offMapDistance(state.grid_size));
-  const exitFar = extendPoint(dropEnd, runDirection, offMapDistance(state.grid_size, 2));
+  const exitNear = extendPoint(dropEnd, runDirection, exitDepartureDistance(state.grid_size));
 
   return {
     id: `mock-air-${state.tick + 1}`,
@@ -524,7 +543,7 @@ export function buildFallbackAirSupportMission(
     approachPoints: [entry, mid, dropStart],
     dropStart,
     dropEnd,
-    exitPoints: [exitNear, exitFar],
+    exitPoints: [exitNear],
     phase: 'approach',
     progress: 0,
   };

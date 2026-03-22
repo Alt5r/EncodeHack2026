@@ -24,12 +24,14 @@ from watchtower_backend.domain.models.simulation import (
 )
 from watchtower_backend.domain.protocols import Planner, RadioSink
 from watchtower_backend.persistence.replay_store import ReplayStore
+from watchtower_backend.services.planning.orchestrator import HeuristicPlanner
 from watchtower_backend.services.projections.websocket import SessionBroadcaster
 from watchtower_backend.services.simulation.engine import SimulationEngine
 
 logger = logging.getLogger(__name__)
 
 type SessionEventListener = Callable[[SessionEvent], Awaitable[None]]
+_GROUND_OPENING_PHASE_TICKS = 10
 
 
 class SessionRuntime:
@@ -76,6 +78,7 @@ class SessionRuntime:
         self._planner_task: asyncio.Task[list[UnitCommand]] | None = None
         self._stop_event = asyncio.Event()
         self._session_event_listener = session_event_listener
+        self._opening_phase_planner = HeuristicPlanner()
 
     @property
     def session_state(self) -> SessionState:
@@ -201,6 +204,12 @@ class SessionRuntime:
                 )
                 last_plan_requested_at = now
 
+            if self._planner_task is not None:
+                provisional_ground_commands = await self._opening_phase_ground_commands(
+                    commanded_unit_ids={command.unit_id for command in commands},
+                )
+                commands.extend(provisional_ground_commands)
+
             try:
                 mutations = self._engine.step(commands=commands)
             except CommandValidationError as error:
@@ -241,6 +250,37 @@ class SessionRuntime:
         if close_session is None:
             return
         await close_session(self._session_state.id)
+
+    async def _opening_phase_ground_commands(
+        self,
+        *,
+        commanded_unit_ids: set[str],
+    ) -> list[UnitCommand]:
+        """Give ground crews immediate opening assignments while Kiro is still thinking."""
+        if self._session_state.tick >= _GROUND_OPENING_PHASE_TICKS:
+            return []
+
+        waiting_ground_ids = {
+            unit.id
+            for unit in self._session_state.units
+            if (
+                unit.unit_type is UnitType.GROUND_CREW
+                and unit.is_active
+                and unit.target is None
+                and unit.id not in commanded_unit_ids
+            )
+        }
+        if not waiting_ground_ids:
+            return []
+
+        fallback_commands = await self._opening_phase_planner.plan(
+            session_state=self._session_state.model_copy(deep=True)
+        )
+        return [
+            command
+            for command in fallback_commands
+            if command.unit_id in waiting_ground_ids
+        ]
 
     async def _emit_planner_messages(self, commands: list[UnitCommand]) -> None:
         """Publish radio transcript for planner decisions."""
